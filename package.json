@@ -1,0 +1,53 @@
+{
+  "name": "project-creator",
+  "displayName": "Project Creator",
+  "description": "AI panel with multiple chats, graph/index search, and LLM-driven tasks",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Other"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "projectCreator.openPanel", "title": "Project Creator: Open Panel" },
+      { "command": "projectCreator.openUserInstructions", "title": "Project Creator: Open User Instructions" },
+      { "command": "projectCreator.sendFileToLLM", "title": "Project Creator: Send current file to LLM" }
+    ],
+    "keybindings": [
+      { "command": "projectCreator.openPanel", "key": "alt+ctrl+p", "mac": "cmd+ctrl+p", "when": "editorTextFocus" },
+      { "command": "projectCreator.sendFileToLLM", "key": "shift+ctrl+l", "mac": "cmd+shift+l", "when": "editorTextFocus" },
+      { "command": "projectCreator.sendFileToLLM", "key": "ctrl+alt+l", "mac": "cmd+ctrl+l", "when": "editorTextFocus" }
+    ],
+    "configuration": {
+      "title": "Project Creator",
+      "properties": {
+        "projectCreator.llm.provider": {
+          "type": "string",
+          "enum": ["local", "openai", "ollama"],
+          "default": "local",
+          "description": "LLM provider"
+        },
+        "projectCreator.llm.url": {
+          "type": "string",
+          "default": "http://192.168.2.146:1234/v1/chat/completions",
+          "description": "URL for local/ollama LLM"
+        },
+        "projectCreator.llm.apiKey": { "type": "string", "default": "" },
+        "projectCreator.llm.model": { "type": "string", "default": "openai/gpt-oss-20b" },
+        "projectCreator.llm.maxTokens": { "type": "number", "default": 240000 },
+        "projectCreator.llm.temperature": { "type": "number", "default": 0.1 },
+        "projectCreator.llm.contextWindow": { "type": "number", "default": 128000, "description": "Context window size (tokens) for compression threshold" }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./ && node -e \"const fs=require('fs'),path=require('path');const d=path.join('out','panel','styles');fs.mkdirSync(d,{recursive:true});fs.copyFileSync(path.join('src','panel','styles','panel.css'),path.join(d,'panel.css'));\"",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "@types/vscode": "^1.74.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {}
+}
