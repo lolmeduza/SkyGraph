@@ -1,2 +1,6 @@
-out/
 node_modules/
+out/
+.code-index/
+.skyGraph/
+*.vsix
+.DS_Store

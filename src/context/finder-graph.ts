@@ -14,23 +14,21 @@ interface PatternGraph {
   files?: Record<string, { relatedFiles: string[]; relatedPatterns: string[] }>;
 }
 
-function getRelevantPathsForQuery(workspaceUri: vscode.Uri, query: string): Promise<string[]> {
+function getRelevantPathsForQuery(index: Awaited<ReturnType<typeof getIndex>>, query: string): string[] {
+  if (!index) return [];
   const tokens = query.toLowerCase().split(/[\s/\\_\-.]+/).filter((t) => t.length >= 2);
-  if (tokens.length === 0) return Promise.resolve([]);
-  return getIndex(workspaceUri).then((index) => {
-    if (!index) return [];
-    const scored: { path: string; score: number }[] = [];
-    for (const rel of Object.keys(index.files)) {
-      const lower = rel.toLowerCase();
-      let score = 0;
-      for (const t of tokens) {
-        if (lower.includes(t)) score++;
-      }
-      if (score > 0) scored.push({ path: rel, score });
+  if (tokens.length === 0) return [];
+  const scored: { path: string; score: number }[] = [];
+  for (const rel of Object.keys(index.files)) {
+    const lower = rel.toLowerCase();
+    let score = 0;
+    for (const t of tokens) {
+      if (lower.includes(t)) score++;
     }
-    scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, MAX_RELEVANT_FILES).map((r) => r.path);
-  });
+    if (score > 0) scored.push({ path: rel, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, MAX_RELEVANT_FILES).map((r) => r.path);
 }
 
 export async function getFinderProjectContext(
@@ -53,9 +51,10 @@ export async function getFinderProjectContext(
     return null;
   }
   const parts: string[] = [];
+  const index = await getIndex(workspaceUri);
 
   if (userQuery?.trim()) {
-    const relevant = await getRelevantPathsForQuery(workspaceUri, userQuery.trim());
+    const relevant = getRelevantPathsForQuery(index, userQuery.trim());
     if (relevant.length > 0) {
       parts.push('Релевантные файлы по запросу: ' + relevant.join(', '));
     }
@@ -76,7 +75,6 @@ export async function getFinderProjectContext(
   }
 
   if (activeFileRelative) {
-    const index = await getIndex(workspaceUri);
     const entry = index?.files?.[activeFileRelative];
     const pattern = entry?.pattern;
     if (pattern && graph.patterns && graph.filesByPattern) {

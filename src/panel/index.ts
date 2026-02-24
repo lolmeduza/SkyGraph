@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { getPanelMarkup } from './markup';
-import { getHistory, saveChat, removeChat, getPanelState, savePanelState, ensureUserInstructionsFile } from '../history';
+import { getHistory, saveChat, removeChat, getPanelState, savePanelState, ensureUserInstructionsFile, readLLMMistakes } from '../history';
 import { chat, chatWithTools } from '../llm';
 import { getLLMConfig } from '../llm/config';
 import { estimateTokens } from '../llm/provider';
@@ -9,8 +9,7 @@ import { getFinderProjectContext, getActiveFileRelative } from '../context/finde
 
 const CONTEXT_COMPRESS_THRESHOLD = 0.8;
 const USER_INSTRUCTIONS_FILE = 'user-instructions.md';
-const viewType = 'projectCreator.panel';
-const DISABLE_LLM_FILE_CREATION = true;
+const viewType = 'skyGraph.panel';
 
 let currentPanel: vscode.WebviewPanel | null = null;
 const lastProposedEditsByChat: Record<string, { path: string; content: string }[]> = {};
@@ -36,7 +35,7 @@ function getWorkspaceFolderUri(): vscode.Uri | undefined {
 }
 
 async function readUserInstructionsFromWorkspace(workspaceUri: vscode.Uri): Promise<string | null> {
-  const fileUri = vscode.Uri.joinPath(workspaceUri, '.projectCreator', USER_INSTRUCTIONS_FILE);
+  const fileUri = vscode.Uri.joinPath(workspaceUri, '.skyGraph', USER_INSTRUCTIONS_FILE);
   try {
     const data = await vscode.workspace.fs.readFile(fileUri);
     const raw = new TextDecoder().decode(data).trim();
@@ -46,6 +45,98 @@ async function readUserInstructionsFromWorkspace(workspaceUri: vscode.Uri): Prom
   }
 }
 
+async function runLLMRequest(
+  panel: vscode.WebviewPanel,
+  opts: {
+    chatId: string;
+    userText: string;
+    history: { role: string; text: string }[];
+    noContext: boolean;
+    workspaceUri: vscode.Uri | undefined;
+    logLabel?: string;
+  }
+): Promise<void> {
+  const { chatId, userText, history, noContext, workspaceUri, logLabel } = opts;
+  const [userInstructions, llmMistakes] = await Promise.all([
+    workspaceUri ? readUserInstructionsFromWorkspace(workspaceUri) : Promise.resolve(null),
+    workspaceUri ? Promise.resolve(readLLMMistakes(workspaceUri.fsPath)) : Promise.resolve(null),
+  ]);
+  const projectContext =
+    !noContext && workspaceUri
+      ? await getFinderProjectContext(workspaceUri, getActiveFileRelative(workspaceUri), userText)
+      : null;
+  const len = !noContext ? (projectContext?.length ?? 0) : 0;
+  if (!noContext) console.log(`[SkyGraph] Контекст проекта${logLabel ? ` (${logLabel})` : ''}:`, len ? `${len} символов` : 'нет');
+  if (llmMistakes) console.log('[SkyGraph] LLM mistakes loaded:', llmMistakes.split('\n').length, 'строк');
+  safePostMessage(panel, { type: 'projectContextUsed', chars: len });
+
+  const systemContent = getSystemPrompt(!noContext, userInstructions, projectContext, llmMistakes);
+  const config = getLLMConfig();
+  const contextLimit = config?.contextWindow ?? 128000;
+
+  let activeHistory = history;
+  const promptText = systemContent + activeHistory.map((m) => m.text).join('') + userText;
+  if (estimateTokens(promptText) > contextLimit * CONTEXT_COMPRESS_THRESHOLD && activeHistory.length > 0) {
+    const toCompress = activeHistory.map((m) => `${m.role}: ${m.text}`).join('\n\n');
+    const summaryResult = await chat([
+      { role: 'system', content: SUMMARIZE_SYSTEM_PROMPT },
+      { role: 'user', content: toCompress },
+    ]);
+    const summary = summaryResult.content?.trim() ?? '';
+    activeHistory = [{ role: 'user', text: '[Контекст сжат]\n' + summary }];
+    safePostMessage(panel, { type: 'replaceHistory', chatId, messages: activeHistory });
+  }
+
+  const llmMessages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
+    { role: 'system', content: systemContent },
+    ...activeHistory.map((m) => ({
+      role: (m.role === 'assistant' ? 'assistant' : 'user') as 'user' | 'assistant',
+      content: m.text,
+    })),
+    { role: 'user', content: userText },
+  ];
+
+  void (chatWithTools(llmMessages, workspaceUri, {
+    onToolProgress: (toolName) => safePostMessage(panel, { type: 'toolProgress', tool: toolName, chatId }),
+    onThinkResult: (reasoning) => safePostMessage(panel, { type: 'thinkResult', reasoning, chatId }),
+    onProposeEditsDiff: (files, edits) => {
+      lastProposedEditsByChat[chatId] = edits;
+      safePostMessage(panel, { type: 'showDiff', files, chatId });
+    },
+  })
+    .then((result) => {
+      const content = result.content ?? 'Ошибка или LLM не настроен.';
+      const isError = result.content === null;
+      const contextUsed =
+        result.usage?.prompt_tokens ??
+        result.contextTracker?.usedTokens ??
+        estimateTokens(systemContent + activeHistory.map((m) => m.text).join('') + userText + content);
+      safePostMessage(panel, {
+        type: 'assistantMessage',
+        text: content,
+        chatId,
+        isError,
+        contextUsed,
+        contextLimit,
+        toolsUsed: result.toolsUsed,
+      });
+    })
+    .catch((err) => {
+      const text = err?.message?.includes('504')
+        ? 'Таймаут (504 Gateway Time-out). Увеличьте таймаут прокси или повторите позже.'
+        : String(err?.message ?? err);
+      safePostMessage(panel, {
+        type: 'assistantMessage',
+        text,
+        chatId,
+        isError: true,
+        contextUsed: 0,
+        contextLimit,
+        toolsUsed: [],
+      });
+    }));
+}
+
 export function openPanel(context: vscode.ExtensionContext): void {
   if (currentPanel) {
     if (!currentPanel.visible) currentPanel.reveal(vscode.ViewColumn.Beside);
@@ -53,7 +144,7 @@ export function openPanel(context: vscode.ExtensionContext): void {
   }
   const panel = vscode.window.createWebviewPanel(
     viewType,
-    'Project Creator',
+    'Sky Graph',
     vscode.ViewColumn.Beside,
     {
       enableScripts: true,
@@ -109,79 +200,14 @@ export function openPanel(context: vscode.ExtensionContext): void {
       }
       if (message.type === 'send' && typeof message.text === 'string') {
         const chatId = message.chatId ?? '';
-        let history = message.messages ?? [];
-        const noContext = message.noProjectContext === true;
-        const userInstructions = currentWorkspaceUri ? await readUserInstructionsFromWorkspace(currentWorkspaceUri) : null;
-        const projectContext =
-          !noContext && currentWorkspaceUri
-            ? await getFinderProjectContext(currentWorkspaceUri, getActiveFileRelative(currentWorkspaceUri), message.text)
-            : null;
-        const len = !noContext ? (projectContext?.length ?? 0) : 0;
-        if (!noContext) console.log('[ProjectCreator] Контекст проекта:', len ? `${len} символов` : 'нет');
-        panel.webview.postMessage({ type: 'projectContextUsed', chars: len });
-        const systemContent = getSystemPrompt(!noContext, userInstructions, projectContext);
-        const config = getLLMConfig();
-        const contextLimit = config?.contextWindow ?? 128000;
-        const promptText = systemContent + history.map((m) => m.text).join('') + message.text;
-        let estimatedTokens = estimateTokens(promptText);
-        if (estimatedTokens > contextLimit * CONTEXT_COMPRESS_THRESHOLD && history.length > 0) {
-          const toCompress = history.map((m) => `${m.role}: ${m.text}`).join('\n\n');
-          const summaryResult = await chat([
-            { role: 'system', content: SUMMARIZE_SYSTEM_PROMPT },
-            { role: 'user', content: toCompress },
-          ]);
-          const summary = summaryResult.content?.trim() ?? '';
-          history = [{ role: 'user', text: '[Контекст сжат]\n' + summary }];
-          panel.webview.postMessage({ type: 'replaceHistory', chatId, messages: history });
-        }
-        panel.webview.postMessage({
-          type: 'userMessage',
-          text: message.text,
+        panel.webview.postMessage({ type: 'userMessage', text: message.text, chatId });
+        void runLLMRequest(panel, {
           chatId,
+          userText: message.text,
+          history: message.messages ?? [],
+          noContext: message.noProjectContext === true,
+          workspaceUri: currentWorkspaceUri,
         });
-        const llmMessages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
-          { role: 'system', content: systemContent },
-          ...history.map((m) => ({
-            role: (m.role === 'assistant' ? 'assistant' : 'user') as 'user' | 'assistant',
-            content: m.text,
-          })),
-        ];
-        llmMessages.push({ role: 'user', content: message.text });
-        chatWithTools(llmMessages, currentWorkspaceUri, {
-          onToolProgress: (toolName) => safePostMessage(panel, { type: 'toolProgress', tool: toolName, chatId }),
-          onProposeEditsDiff: (files, edits) => {
-            lastProposedEditsByChat[chatId] = edits;
-            safePostMessage(panel, { type: 'showDiff', files, chatId });
-          },
-        })
-          .then((result) => {
-            const content = result.content ?? 'Ошибка или LLM не настроен.';
-            const isError = result.content === null;
-            const contextUsed =
-              result.usage?.prompt_tokens ??
-              estimateTokens(systemContent + history.map((m) => m.text).join('') + message.text + content);
-            safePostMessage(panel, {
-              type: 'assistantMessage',
-              text: content,
-              chatId,
-              isError,
-              contextUsed,
-              contextLimit,
-              toolsUsed: result.toolsUsed,
-            });
-          })
-          .catch((err) => {
-            const text = err?.message?.includes('504') ? 'Таймаут (504 Gateway Time-out). Увеличьте таймаут прокси или повторите позже.' : String(err?.message ?? err);
-            safePostMessage(panel, {
-              type: 'assistantMessage',
-              text,
-              chatId,
-              isError: true,
-              contextUsed: 0,
-              contextLimit: config?.contextWindow ?? 128000,
-              toolsUsed: [],
-            });
-          });
         return;
       }
       if (message.type === 'retry' && message.chatId && Array.isArray(message.messages)) {
@@ -189,63 +215,15 @@ export function openPanel(context: vscode.ExtensionContext): void {
         const messages = message.messages as { role: string; text: string }[];
         if (messages.length === 0) return;
         const last = messages[messages.length - 1];
-        const history = messages.slice(0, -1);
-        const noContext = message.noProjectContext === true;
-        const userInstructions = currentWorkspaceUri ? await readUserInstructionsFromWorkspace(currentWorkspaceUri) : null;
-        const lastText = typeof last?.text === 'string' ? last.text : '';
-        const projectContext =
-          !noContext && currentWorkspaceUri
-            ? await getFinderProjectContext(currentWorkspaceUri, getActiveFileRelative(currentWorkspaceUri), lastText)
-            : null;
-        const lenRetry = !noContext ? (projectContext?.length ?? 0) : 0;
-        if (!noContext) console.log('[ProjectCreator] Контекст проекта (retry):', lenRetry ? `${lenRetry} символов` : 'нет');
-        safePostMessage(panel, { type: 'projectContextUsed', chars: lenRetry });
-        const systemContent = getSystemPrompt(!noContext, userInstructions, projectContext);
-        const config = getLLMConfig();
-        const contextLimit = config?.contextWindow ?? 128000;
-        const llmMessages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
-          { role: 'system', content: systemContent },
-          ...history.map((m) => ({
-            role: (m.role === 'assistant' ? 'assistant' : 'user') as 'user' | 'assistant',
-            content: m.text,
-          })),
-        ];
-        llmMessages.push({ role: 'user', content: last.text });
-        chatWithTools(llmMessages, currentWorkspaceUri, {
-          onToolProgress: (toolName) => safePostMessage(panel, { type: 'toolProgress', tool: toolName, chatId }),
-          onProposeEditsDiff: (files, edits) => {
-            lastProposedEditsByChat[chatId] = edits;
-            safePostMessage(panel, { type: 'showDiff', files, chatId });
-          },
-        })
-          .then((result) => {
-            const content = result.content ?? 'Ошибка или LLM не настроен.';
-            const isError = result.content === null;
-            const contextUsed =
-              result.usage?.prompt_tokens ??
-              estimateTokens(systemContent + history.map((m) => m.text).join('') + last.text + content);
-            safePostMessage(panel, {
-              type: 'assistantMessage',
-              text: content,
-              chatId,
-              isError,
-              contextUsed,
-              contextLimit,
-              toolsUsed: result.toolsUsed,
-            });
-          })
-          .catch((err) => {
-            const text = err?.message?.includes('504') ? 'Таймаут (504 Gateway Time-out). Увеличьте таймаут прокси или повторите позже.' : String(err?.message ?? err);
-            safePostMessage(panel, {
-              type: 'assistantMessage',
-              text,
-              chatId,
-              isError: true,
-              contextUsed: 0,
-              contextLimit: config?.contextWindow ?? 128000,
-              toolsUsed: [],
-            });
-          });
+        const userText = typeof last?.text === 'string' ? last.text : '';
+        void runLLMRequest(panel, {
+          chatId,
+          userText,
+          history: messages.slice(0, -1),
+          noContext: message.noProjectContext === true,
+          workspaceUri: currentWorkspaceUri,
+          logLabel: 'retry',
+        });
         return;
       }
       if (message.type === 'persistChat' && message.chatId && currentWorkspacePath) {
@@ -269,24 +247,30 @@ export function openPanel(context: vscode.ExtensionContext): void {
         return;
       }
       if (message.type === 'applyEdits' && message.chatId) {
-        if (DISABLE_LLM_FILE_CREATION) return;
         if (!currentWorkspaceUri) return;
         const toApply = lastProposedEditsByChat[message.chatId];
         if (!toApply?.length) return;
         delete lastProposedEditsByChat[message.chatId];
-        Promise.all(
-          toApply.map((e) =>
-            vscode.workspace.fs.writeFile(
-              vscode.Uri.joinPath(currentWorkspaceUri, e.path.replace(/\\/g, '/')),
-              new TextEncoder().encode(e.content)
-            )
-          )
-        )
+        const applyOne = async (e: { path: string; content: string }) => {
+          const normalized = e.path.replace(/\\/g, '/');
+          const uri = vscode.Uri.joinPath(currentWorkspaceUri, normalized);
+          const parts = normalized.split('/');
+          if (parts.length > 1) {
+            for (let i = 1; i < parts.length; i++) {
+              const dirPath = parts.slice(0, i).join('/');
+              try {
+                await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(currentWorkspaceUri, dirPath));
+              } catch { /* уже есть */ }
+            }
+          }
+          await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(e.content));
+        };
+        Promise.all(toApply.map(applyOne))
           .then(() => {
             safePostMessage(panel, { type: 'diffApplied' });
           })
           .catch((err) => {
-            console.error('[ProjectCreator] applyEdits failed:', err);
+            console.error('[SkyGraph] applyEdits failed:', err);
             safePostMessage(panel, { type: 'diffApplyError', message: String(err) });
           });
         return;

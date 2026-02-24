@@ -10,24 +10,41 @@ import { isIndexedFile } from './context/indexer/scanner';
 const INDEX_DEBOUNCE_MS = 1500;
 let indexDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
+let outputChannel: vscode.OutputChannel | null = null;
+
+function getOutputChannel(): vscode.OutputChannel {
+  if (!outputChannel) {
+    outputChannel = vscode.window.createOutputChannel('Sky Graph');
+  }
+  return outputChannel;
+}
+
+function appendToOutput(prefix: string, args: unknown[]): void {
+  const text = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+  getOutputChannel().appendLine(prefix ? `${prefix} ${text}` : text);
+}
+
 function installOutputChannel(): void {
-  const channel = vscode.window.createOutputChannel('Project Creator');
-  const line = (args: unknown[]): string =>
-    args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
   const origLog = console.log;
   const origError = console.error;
   const origWarn = console.warn;
+
   console.log = (...args: unknown[]) => {
     origLog.apply(console, args);
-    if (line(args).includes('[ProjectCreator]')) channel.appendLine(line(args));
+    const text = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+    if (text.includes('[SkyGraph]')) {
+      getOutputChannel().appendLine(text);
+    }
   };
+
   console.error = (...args: unknown[]) => {
     origError.apply(console, args);
-    channel.appendLine('[ERROR] ' + line(args));
+    appendToOutput('[ERROR]', args);
   };
+
   console.warn = (...args: unknown[]) => {
     origWarn.apply(console, args);
-    channel.appendLine('[WARN] ' + line(args));
+    appendToOutput('[WARN]', args);
   };
 }
 
@@ -41,11 +58,18 @@ function scheduleIndexUpdate(workspaceUri: vscode.Uri): void {
 
 export function activate(context: vscode.ExtensionContext): void {
   installOutputChannel();
+  getOutputChannel().appendLine('[SkyGraph] Активация...');
+  // Проверяем что патч console работает
+  console.log('[SkyGraph] console.log патч работает');
   initLLM(getLLMConfig());
+
   const workspaceUri = vscode.workspace.workspaceFolders?.[0]?.uri;
+  getOutputChannel().appendLine('[SkyGraph] Workspace: ' + (workspaceUri?.fsPath ?? 'none'));
+  
   if (workspaceUri) {
     void getOrBuildIndex(workspaceUri);
   }
+  
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor((editor) => {
       const panel = getPanel();
@@ -75,10 +99,11 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!wsUri || !e.files.some((u) => isIndexedFile(u))) return;
       scheduleIndexUpdate(wsUri);
     }),
-    vscode.commands.registerCommand('projectCreator.openPanel', () => {
+    vscode.commands.registerCommand('skyGraph.openPanel', () => {
+      getOutputChannel().show(true);
       openPanel(context);
     }),
-    vscode.commands.registerCommand('projectCreator.sendFileToLLM', () => {
+    vscode.commands.registerCommand('skyGraph.sendFileToLLM', () => {
       const editor = vscode.window.activeTextEditor;
       const doc = editor?.document;
       if (!doc?.uri) {
@@ -100,7 +125,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }, 200);
       }
     }),
-    vscode.commands.registerCommand('projectCreator.openUserInstructions', () => {
+    vscode.commands.registerCommand('skyGraph.openUserInstructions', () => {
       const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
       if (!workspacePath) {
         vscode.window.showWarningMessage('Откройте папку проекта.');
@@ -111,6 +136,10 @@ export function activate(context: vscode.ExtensionContext): void {
         fs.writeFileSync(filePath, '', 'utf-8');
       }
       vscode.window.showTextDocument(vscode.Uri.file(filePath));
+    }),
+    vscode.commands.registerCommand('skyGraph.showOutput', () => {
+      getOutputChannel().appendLine('[SkyGraph] Output opened by command.');
+      getOutputChannel().show(true);
     })
   );
 }

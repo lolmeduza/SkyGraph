@@ -1,41 +1,46 @@
 {
-  "name": "project-creator",
-  "displayName": "Project Creator",
+  "name": "sky-graph",
+  "displayName": "Sky Graph",
   "description": "AI panel with multiple chats, graph/index search, and LLM-driven tasks",
   "version": "0.1.0",
+  "license": "GPL-3.0-or-later",
   "engines": { "vscode": "^1.80.0" },
   "categories": ["Other"],
   "main": "./out/extension.js",
+  "activationEvents": [
+    "onCommand:skyGraph.openPanel"
+  ],
   "contributes": {
     "commands": [
-      { "command": "projectCreator.openPanel", "title": "Project Creator: Open Panel" },
-      { "command": "projectCreator.openUserInstructions", "title": "Project Creator: Open User Instructions" },
-      { "command": "projectCreator.sendFileToLLM", "title": "Project Creator: Send current file to LLM" }
-    ],
+      { "command": "skyGraph.openPanel", "title": "Sky Graph: Open Panel" },
+      { "command": "skyGraph.openUserInstructions", "title": "Sky Graph: Open User Instructions" },
+{ "command": "skyGraph.sendFileToLLM", "title": "Sky Graph: Send current file to LLM" },
+      { "command": "skyGraph.showOutput", "title": "Sky Graph: Show Output Log" }
+],
     "keybindings": [
-      { "command": "projectCreator.openPanel", "key": "alt+ctrl+p", "mac": "cmd+ctrl+p", "when": "editorTextFocus" },
-      { "command": "projectCreator.sendFileToLLM", "key": "shift+ctrl+l", "mac": "cmd+shift+l", "when": "editorTextFocus" },
-      { "command": "projectCreator.sendFileToLLM", "key": "ctrl+alt+l", "mac": "cmd+ctrl+l", "when": "editorTextFocus" }
+      { "command": "skyGraph.openPanel", "key": "alt+ctrl+p", "mac": "cmd+ctrl+p", "when": "editorTextFocus" },
+      { "command": "skyGraph.sendFileToLLM", "key": "shift+ctrl+l", "mac": "cmd+shift+l", "when": "editorTextFocus" },
+      { "command": "skyGraph.sendFileToLLM", "key": "ctrl+alt+l", "mac": "cmd+ctrl+l", "when": "editorTextFocus" }
     ],
     "configuration": {
-      "title": "Project Creator",
+      "title": "Sky Graph",
       "properties": {
-        "projectCreator.llm.provider": {
+        "skyGraph.llm.provider": {
           "type": "string",
           "enum": ["local", "openai", "ollama"],
           "default": "local",
           "description": "LLM provider"
         },
-        "projectCreator.llm.url": {
+        "skyGraph.llm.url": {
           "type": "string",
-          "default": "http://192.168.2.146:1234/v1/chat/completions",
-          "description": "URL for local/ollama LLM"
+          "default": "",
+          "description": "LLM API URL. Empty = OpenAI (use apiKey) or Ollama on localhost. Set for custom server (e.g. http://host:port/v1/chat/completions)."
         },
-        "projectCreator.llm.apiKey": { "type": "string", "default": "" },
-        "projectCreator.llm.model": { "type": "string", "default": "openai/gpt-oss-20b" },
-        "projectCreator.llm.maxTokens": { "type": "number", "default": 240000 },
-        "projectCreator.llm.temperature": { "type": "number", "default": 0.1 },
-        "projectCreator.llm.contextWindow": { "type": "number", "default": 128000, "description": "Context window size (tokens) for compression threshold" }
+        "skyGraph.llm.apiKey": { "type": "string", "default": "", "description": "API key for OpenAI. Leave empty for local/ollama." },
+        "skyGraph.llm.model": { "type": "string", "default": "", "description": "Model name (e.g. gpt-4o, llama3)." },
+        "skyGraph.llm.maxTokens": { "type": "number", "default": 240000 },
+        "skyGraph.llm.temperature": { "type": "number", "default": 0.1 },
+        "skyGraph.llm.contextWindow": { "type": "number", "default": 128000, "description": "Context window size (tokens) for compression threshold" }
       }
     }
   },

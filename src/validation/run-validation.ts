@@ -53,7 +53,7 @@ export async function runValidation(
 
   const root = workspaceUri.fsPath;
   const paths = edits.map((e) => e.path.replace(/\\/g, '/'));
-  console.log('[ProjectCreator] Валидация: подмена', paths.length, 'файлов:', paths.join(', '));
+  console.log('[SkyGraph] Валидация: подмена', paths.length, 'файлов:', paths.join(', '));
 
   const backups: { path: string; content: Uint8Array; existed: boolean }[] = [];
 
@@ -82,18 +82,18 @@ export async function runValidation(
 
     if (options?.commands?.length) {
       commandsToRun = options.commands;
-      console.log('[ProjectCreator] Валидация: команды от LLM', commandsToRun.length);
+      console.log('[SkyGraph] Валидация: команды от LLM', commandsToRun.length);
     } else {
       const discovered = await getProjectCommands(workspaceUri);
       if (discovered.all.length) {
         commandsToRun = discovered.all;
-        console.log('[ProjectCreator] Валидация: команды из проекта', commandsToRun.join(', '));
+        console.log('[SkyGraph] Валидация: команды из проекта', commandsToRun.join(', '));
       }
     }
 
     if (commandsToRun?.length) {
       for (const cmd of commandsToRun) {
-        console.log('[ProjectCreator] Валидация: запуск', cmd);
+        console.log('[SkyGraph] Валидация: запуск', cmd);
         const { output, failed } = await runOneCommand(root, cmd);
         if (failed || output) {
           parts.push(`--- ${cmd} ---\n${output}`);
@@ -111,7 +111,7 @@ export async function runValidation(
         // no tsconfig
       }
       if (hasTsc) {
-        console.log('[ProjectCreator] Валидация: запуск tsc --noEmit');
+        console.log('[SkyGraph] Валидация: запуск tsc --noEmit');
         try {
           const { execSync: run } = await import('child_process');
           const out = run('npx tsc --noEmit 2>&1', {
@@ -125,11 +125,11 @@ export async function runValidation(
           if (filtered) {
             parts.push('--- tsc (только изменённые файлы) ---\n' + filtered);
             hasErrors = true;
-            console.log('[ProjectCreator] Валидация: tsc — ошибки в изменённых файлах,', filtered.length, 'симв.');
+            console.log('[SkyGraph] Валидация: tsc — ошибки в изменённых файлах,', filtered.length, 'симв.');
           } else if (raw) {
-            console.log('[ProjectCreator] Валидация: tsc — ошибки есть в проекте, но не в изменённых файлах');
+            console.log('[SkyGraph] Валидация: tsc — ошибки есть в проекте, но не в изменённых файлах');
           } else {
-            console.log('[ProjectCreator] Валидация: tsc — ок');
+            console.log('[SkyGraph] Валидация: tsc — ок');
           }
         } catch (err: unknown) {
           const stderr = err && typeof err === 'object' && 'stderr' in err ? String((err as { stderr?: unknown }).stderr) : '';
@@ -142,14 +142,14 @@ export async function runValidation(
               parts.push('--- tsc (только изменённые файлы) ---\n' + filtered);
               hasErrors = true;
             }
-            console.log('[ProjectCreator] Валидация: tsc — ошибка, в изменённых:', !!filtered);
+            console.log('[SkyGraph] Валидация: tsc — ошибка, в изменённых:', !!filtered);
           }
         }
       }
 
       const hasGo = edits.some((e) => e.path.replace(/\\/g, '/').endsWith('.go'));
       if (hasGo) {
-        console.log('[ProjectCreator] Валидация: запуск go build ./...');
+        console.log('[SkyGraph] Валидация: запуск go build ./...');
         try {
           const { execSync: run } = await import('child_process');
           run('go build ./... 2>&1', {
@@ -158,7 +158,7 @@ export async function runValidation(
             timeout: VALIDATE_TIMEOUT_MS,
             maxBuffer: MAX_BUFFER,
           });
-          console.log('[ProjectCreator] Валидация: go build — ок');
+          console.log('[SkyGraph] Валидация: go build — ок');
         } catch (err: unknown) {
           const stderr = err && typeof err === 'object' && 'stderr' in err ? String((err as { stderr?: unknown }).stderr) : '';
           const stdout = err && typeof err === 'object' && 'stdout' in err ? String((err as { stdout?: unknown }).stdout) : '';
@@ -167,7 +167,7 @@ export async function runValidation(
           if (out) {
             parts.push('--- go build ---\n' + out);
             hasErrors = true;
-            console.log('[ProjectCreator] Валидация: go build — ошибки,', out.slice(0, 150));
+            console.log('[SkyGraph] Валидация: go build — ошибки,', out.slice(0, 150));
           }
         }
       }
@@ -176,7 +176,7 @@ export async function runValidation(
         .filter((e) => /\.(tsx?|jsx?|vue|js|mjs|cjs)$/i.test(e.path))
         .map((e) => e.path.replace(/\\/g, '/'));
       if (eslintPaths.length > 0) {
-        console.log('[ProjectCreator] Валидация: запуск eslint для', eslintPaths.length, 'файлов');
+        console.log('[SkyGraph] Валидация: запуск eslint для', eslintPaths.length, 'файлов');
         try {
           const { execSync: run } = await import('child_process');
           const out = run(`npx eslint ${eslintPaths.map((p) => JSON.stringify(p)).join(' ')} 2>&1`, {
@@ -188,9 +188,9 @@ export async function runValidation(
           if (out && String(out).trim()) {
             parts.push('--- eslint ---\n' + String(out).trim());
             hasErrors = true;
-            console.log('[ProjectCreator] Валидация: eslint — ошибки,', String(out).trim().length, 'симв.');
+            console.log('[SkyGraph] Валидация: eslint — ошибки,', String(out).trim().length, 'симв.');
           } else {
-            console.log('[ProjectCreator] Валидация: eslint — ок');
+            console.log('[SkyGraph] Валидация: eslint — ок');
           }
         } catch (err: unknown) {
           const stderr = err && typeof err === 'object' && 'stderr' in err ? String((err as { stderr?: unknown }).stderr) : '';
@@ -200,17 +200,17 @@ export async function runValidation(
           if (out) {
             parts.push('--- eslint ---\n' + out);
             hasErrors = true;
-            console.log('[ProjectCreator] Валидация: eslint — ошибка,', out.slice(0, 150));
+            console.log('[SkyGraph] Валидация: eslint — ошибка,', out.slice(0, 150));
           }
         }
       }
     }
 
     const output = parts.join('\n\n').trim();
-    console.log('[ProjectCreator] Валидация: результат —', hasErrors ? `ошибки (${output.length} симв.)` : 'ок');
+    console.log('[SkyGraph] Валидация: результат —', hasErrors ? `ошибки (${output.length} симв.)` : 'ок');
     return { output, hasErrors };
   } finally {
-    console.log('[ProjectCreator] Валидация: восстановление', backups.length, 'файлов');
+    console.log('[SkyGraph] Валидация: восстановление', backups.length, 'файлов');
     for (const b of backups) {
       const uri = vscode.Uri.joinPath(workspaceUri, b.path);
       try {
@@ -220,7 +220,7 @@ export async function runValidation(
           await vscode.workspace.fs.delete(uri);
         }
       } catch (e) {
-        console.error('[ProjectCreator] Restore failed:', b.path, e);
+        console.error('[SkyGraph] Restore failed:', b.path, e);
       }
     }
   }

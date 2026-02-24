@@ -4,9 +4,17 @@ export interface FileIndexEntry {
   pattern: string;
   domain: string;
   imports: string[];
+  exports: string[];
+  functions: string[];
+  classes: string[];
+  interfaces: string[];
+  types: string[];
+  hooks: string[];
+  tags: string[];
   contentHash: string;
   metadata: {
     lines: number;
+    complexity: number;
     lastModified: number;
   };
 }

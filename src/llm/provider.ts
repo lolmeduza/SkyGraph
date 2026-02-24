@@ -25,9 +25,95 @@ function extractMessage(data: unknown): ChoiceMessage | null {
   if (data && typeof data === 'object' && 'choices' in data) {
     const choices = (data as { choices?: unknown[] }).choices;
     if (Array.isArray(choices) && choices[0]) {
-      return (choices[0] as { message?: ChoiceMessage }).message ?? null;
+      const message = (choices[0] as { message?: ChoiceMessage }).message;
+      if (message) {
+        // Parse DeepSeek/custom format: <|channel|>commentary functions<|message|>function_name({args})
+        if (message.content && typeof message.content === 'string') {
+          const parsed = parseDeepSeekToolCall(message.content);
+          if (parsed) {
+            console.log(`[SkyGraph] 🔧 Parsed custom tool format: ${parsed.function.name}(${parsed.function.arguments.slice(0, 80)}...)`);
+            return {
+              content: null,
+              tool_calls: [parsed],
+            };
+          }
+        }
+        return message;
+      }
     }
   }
+  return null;
+}
+
+function parseDeepSeekToolCall(content: string): LLMToolCall | null {
+  const knownTools = ['search_files', 'read_file', 'grep', 'search_and_read', 'propose_edits', 'get_project_commands'];
+  
+  // Try multiple patterns in specificity order; no bare tool_name({}) pattern to avoid false positives
+  const patterns: { re: RegExp; needsBraces?: boolean }[] = [
+    // Pattern 1: <|channel|>...functions.tool_name({args})
+    { re: /<\|channel\|>[^<]*<\|message\|>\s*functions[\s.:]+(\w+)\s*\(\s*(\{[\s\S]*?\})\s*\)/ },
+    // Pattern 2: <|channel|>...functions.tool_name(key: "value", ...) - БЕЗ ФИГУРНЫХ СКОБОК
+    { re: /<\|channel\|>[^<]*<\|message\|>\s*functions[\s.:]+(\w+)\s*\(\s*([^)]+)\s*\)/, needsBraces: true },
+    // Pattern 3: functions.tool_name({args})
+    { re: /functions[\s.:]+(\w+)\s*\(\s*(\{[\s\S]*?\})\s*\)/ },
+  ];
+
+  for (const { re, needsBraces } of patterns) {
+    const match = content.match(re);
+    if (match) {
+      const functionName = match[1];
+      if (!knownTools.includes(functionName)) continue;
+      
+      let argsJson = match[2];
+      
+      // Если нужны фигурные скобки — добавляем
+      if (needsBraces && !argsJson.trim().startsWith('{')) {
+        argsJson = `{${argsJson}}`;
+      }
+      
+      // Try to parse as-is first
+      try {
+        const parsed = JSON.parse(argsJson);
+        return {
+          id: 'call_' + Date.now(),
+          type: 'function',
+          function: {
+            name: functionName,
+            arguments: JSON.stringify(parsed),
+          },
+        };
+      } catch {
+        // Try fixing: unquoted keys and values
+        let fixed = argsJson
+          .replace(/(\w+)\s*:/g, '"$1":') // Add quotes to keys
+          .replace(/:\s*'([^']*)'/g, ':"$1"') // Single quotes to double
+          .replace(/:\s*([a-zA-Z][a-zA-Z0-9\s_\-./]*?)([,}])/g, (_m, val, end) => {
+            const trimmed = val.trim();
+            // Don't quote booleans, numbers, null
+            if (trimmed === 'true' || trimmed === 'false' || trimmed === 'null' || !isNaN(Number(trimmed))) {
+              return `:${trimmed}${end}`;
+            }
+            return `:"${trimmed}"${end}`;
+          })
+          .replace(/"{2,}/g, '"'); // Remove duplicate quotes
+        
+        try {
+          const parsed = JSON.parse(fixed);
+          return {
+            id: 'call_' + Date.now(),
+            type: 'function',
+            function: {
+              name: functionName,
+              arguments: JSON.stringify(parsed),
+            },
+          };
+        } catch (e) {
+          console.warn(`[SkyGraph] Failed to parse tool call: ${functionName}`, argsJson.slice(0, 80));
+        }
+      }
+    }
+  }
+  
   return null;
 }
 
@@ -40,12 +126,21 @@ function logUrl(url: string): string {
   }
 }
 
+const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
+const OLLAMA_DEFAULT_URL = 'http://localhost:11434/v1/chat/completions';
+
+function resolveLLMUrl(config: LLMConfig): string {
+  if (config.url && config.url.trim()) return config.url.trim();
+  if (config.provider === 'openai') return OPENAI_URL;
+  return OLLAMA_DEFAULT_URL;
+}
+
 export async function chatCompletion(
   config: LLMConfig,
   messages: LLMMessage[],
   options?: { maxTokens?: number; temperature?: number; tools?: ToolDefinition[] }
 ): Promise<LLMResponse | null> {
-  const url = config.url || 'http://localhost:11434/v1/chat/completions';
+  const url = resolveLLMUrl(config);
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
@@ -67,20 +162,6 @@ export async function chatCompletion(
 
   const bodyStr = JSON.stringify(body);
   const bodyChars = bodyStr.length;
-  const totalText = messages.map((m) => (typeof m.content === 'string' ? m.content : '') + (m.tool_calls ? JSON.stringify(m.tool_calls) : '')).join('');
-  const estTokens = estimateTokens(totalText);
-
-  console.log(
-    '[ProjectCreator LLM] POST',
-    logUrl(url),
-    '| body',
-    bodyChars,
-    'chars | messages',
-    messages.length,
-    '| ~',
-    estTokens,
-    'tokens'
-  );
 
   try {
     const res = await fetch(url, {
@@ -91,7 +172,7 @@ export async function chatCompletion(
     if (!res.ok) {
       const errText = await res.text();
       console.error(
-        '[ProjectCreator LLM] HTTP',
+        '[SkyGraph LLM] HTTP',
         res.status,
         res.statusText,
         '| response:',
@@ -109,7 +190,7 @@ export async function chatCompletion(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(
-      '[ProjectCreator LLM] Error:',
+      '[SkyGraph LLM] Error:',
       msg,
       '| request:',
       logUrl(url),

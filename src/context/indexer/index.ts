@@ -9,12 +9,21 @@ const INDEX_FILE = 'index.json';
 
 function isUsefulEntry(entry: FileIndexEntry): boolean {
   if (entry.metadata.lines < 3) return false;
-  if (entry.pattern === 'other' && entry.imports.length === 0 && entry.metadata.lines < 15) return false;
+  if (entry.pattern === 'test') return false;
+
+  const hasSymbols =
+    entry.imports.length > 0 ||
+    entry.exports.length > 0 ||
+    entry.functions.length > 0 ||
+    entry.classes.length > 0 ||
+    entry.hooks.length > 0;
+
+  if (entry.pattern === 'other' && !hasSymbols && entry.metadata.lines < 15) return false;
   return true;
 }
 
 export async function buildIndex(workspaceUri: vscode.Uri): Promise<IndexCache> {
-  console.log('[ProjectCreator] Индекс: сканирование...');
+  console.log('[SkyGraph] Индекс: сканирование...');
   const files = await scanWorkspace(workspaceUri);
   const projectHash = getProjectHash(files);
 
@@ -24,7 +33,7 @@ export async function buildIndex(workspaceUri: vscode.Uri): Promise<IndexCache> 
     if (isUsefulEntry(entry)) indexed[file.relativePath] = entry;
   }
 
-  console.log('[ProjectCreator] Индекс: построен', files.length, 'файлов →', Object.keys(indexed).length, 'записей');
+  console.log('[SkyGraph] Индекс: построен', files.length, 'файлов →', Object.keys(indexed).length, 'записей');
   const cache: IndexCache = {
     version: '1.0',
     timestamp: Date.now(),
@@ -41,9 +50,9 @@ export async function buildIndex(workspaceUri: vscode.Uri): Promise<IndexCache> 
   const fileUri = vscode.Uri.joinPath(workspaceUri, INDEX_DIR, INDEX_FILE);
   await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(JSON.stringify(cache, null, 2)));
 
-  console.log('[ProjectCreator] Граф: построение...');
+  console.log('[SkyGraph] Граф: построение...');
   await buildAndSaveGraph(workspaceUri, indexed);
-  console.log('[ProjectCreator] Граф: построен, сохранён в .code-index/pattern-graph.json');
+  console.log('[SkyGraph] Граф: построен, сохранён в .code-index/pattern-graph.json');
 
   return cache;
 }
@@ -62,7 +71,7 @@ export async function getIndex(workspaceUri: vscode.Uri): Promise<IndexCache | n
 export async function getOrBuildIndex(workspaceUri: vscode.Uri): Promise<IndexCache | null> {
   const existing = await getIndex(workspaceUri);
   if (existing) {
-    console.log('[ProjectCreator] Индекс: загружен из кэша,', Object.keys(existing.files).length, 'записей');
+    console.log('[SkyGraph] Индекс: загружен из кэша,', Object.keys(existing.files).length, 'записей');
     await ensureGraph(workspaceUri, existing.files);
     return existing;
   }
@@ -74,9 +83,9 @@ async function ensureGraph(workspaceUri: vscode.Uri, files: Record<string, FileI
   try {
     await vscode.workspace.fs.stat(graphUri);
   } catch {
-    console.log('[ProjectCreator] Граф: не найден, построение...');
+    console.log('[SkyGraph] Граф: не найден, построение...');
     await buildAndSaveGraph(workspaceUri, files);
-    console.log('[ProjectCreator] Граф: построен');
+    console.log('[SkyGraph] Граф: построен');
   }
 }
 
@@ -113,9 +122,9 @@ export async function updateIndex(workspaceUri: vscode.Uri): Promise<IndexCache 
   };
   const fileUri = vscode.Uri.joinPath(workspaceUri, INDEX_DIR, INDEX_FILE);
   await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(JSON.stringify(cache, null, 2)));
-  console.log('[ProjectCreator] Индекс: обновлён,', Object.keys(indexed).length, 'записей');
-  console.log('[ProjectCreator] Граф: построение...');
+  console.log('[SkyGraph] Индекс: обновлён,', Object.keys(indexed).length, 'записей');
+  console.log('[SkyGraph] Граф: построение...');
   await buildAndSaveGraph(workspaceUri, indexed);
-  console.log('[ProjectCreator] Граф: обновлён');
+  console.log('[SkyGraph] Граф: обновлён');
   return cache;
 }

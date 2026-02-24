@@ -1,5 +1,71 @@
 * { box-sizing: border-box; }
-body { margin: 0; font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); }
+body { margin: 0; font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); position: relative; }
+
+/* === Анимация открытия: звёздное небо === */
+.starfield-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  transition: opacity 0.9s ease-out;
+}
+.starfield-overlay.starfield-out {
+  opacity: 0;
+  pointer-events: none;
+}
+.starfield-bg {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 120% 80% at 50% 20%, #1a0a2e 0%, #0d0221 35%, #050510 70%, #000 100%);
+}
+.starfield-stars {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.starfield-stars .star {
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 6px 1px rgba(255,255,255,0.6);
+  transform: scale(var(--scale, 1));
+  animation: starfield-twinkle 2.5s ease-in-out infinite;
+  opacity: 0.3;
+}
+.starfield-stars .star:nth-child(3n) {
+  width: 2px;
+  height: 2px;
+  opacity: 0.5;
+}
+.starfield-stars .star:nth-child(5n) {
+  width: 4px;
+  height: 4px;
+  box-shadow: 0 0 8px 2px rgba(200,220,255,0.7);
+  opacity: 0.4;
+}
+@keyframes starfield-twinkle {
+  0%, 100% { opacity: 0.25; transform: scale(var(--scale, 1)); }
+  50% { opacity: 0.9; transform: scale(calc(var(--scale, 1) * 1.2)); }
+}
+.starfield-title {
+  position: relative;
+  z-index: 2;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: rgba(255,255,255,0.9);
+  text-shadow: 0 0 20px rgba(150,180,255,0.5);
+  letter-spacing: 0.08em;
+  animation: starfield-title-in 1.2s ease-out;
+}
+@keyframes starfield-title-in {
+  0% { opacity: 0; transform: scale(0.9); }
+  100% { opacity: 1; transform: scale(1); }
+}
 .tabs-row { display: flex; align-items: center; justify-content: space-between; padding: 8px; border-bottom: 1px solid var(--vscode-widget-border); flex-shrink: 0; gap: 8px; }
 .tabs { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; flex: 1; min-width: 0; }
 .tabs-actions { position: relative; flex-shrink: 0; display: flex; gap: 6px; align-items: center; }
@@ -122,3 +188,8 @@ body { margin: 0; font-family: var(--vscode-font-family); font-size: var(--vscod
 }
 .send-btn:hover { background: var(--vscode-button-hoverBackground); }
 .send-btn:focus { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.think-block { margin-bottom: 8px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; overflow: hidden; background: var(--vscode-editor-inactiveSelectionBackground, rgba(128,128,128,0.08)); }
+.think-summary { padding: 6px 10px; cursor: pointer; font-size: 12px; font-weight: 500; color: var(--vscode-descriptionForeground); user-select: none; list-style: none; display: flex; align-items: center; gap: 6px; }
+.think-summary::before { content: "🧠"; font-size: 13px; }
+.think-block[open] .think-summary::before { content: "🧠"; }
+.think-body { padding: 8px 10px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; color: var(--vscode-foreground); opacity: 0.85; border-top: 1px solid var(--vscode-widget-border); }

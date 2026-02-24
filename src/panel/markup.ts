@@ -1,7 +1,30 @@
 import { getPanelScript } from './panel-script';
 
+/** Равномерно распределённые позиции для звёзд (процент от ширины/высоты) */
+function starPositions(count: number): { left: number; top: number }[] {
+  const out: { left: number; top: number }[] = [];
+  for (let i = 0; i < count; i++) {
+    out.push({
+      left: ((i * 17 + 3) % 97) + 1,
+      top: ((i * 23 + 11) % 94) + 2,
+    });
+  }
+  return out;
+}
+
 export function getPanelMarkup(): string {
+  const stars = starPositions(55)
+    .map(
+      (p, i) =>
+        `<span class="star" style="left:${p.left}%;top:${p.top}%;animation-delay:${(i % 30) * 0.15}s;--scale:${0.5 + (i % 3) * 0.35}"></span>`
+    )
+    .join('');
   return `
+  <div id="starfield-overlay" class="starfield-overlay" aria-hidden="true">
+    <div class="starfield-bg"></div>
+    <div class="starfield-stars">${stars}</div>
+    <div class="starfield-title">Sky Graph</div>
+  </div>
   <div class="wrapper">
     <div class="tabs-row">
       <div class="tabs" id="chatTabs"></div>

@@ -8,6 +8,7 @@ interface GraphNode {
   pattern: string;
   domain: string;
   imports: string[];
+  exports: string[];
 }
 
 interface PatternRelation {
@@ -40,6 +41,41 @@ function isGeneratedOrPb(relativePath: string): boolean {
   return p.includes('/pb/') || p.includes('.pb.');
 }
 
+function resolveImportToFile(
+  importPath: string,
+  importerFile: string,
+  fileSet: Set<string>
+): string | null {
+  if (importPath.startsWith('.')) {
+    const importerDir = importerFile.replace(/\\/g, '/').replace(/\/[^/]+$/, '');
+    const parts = importerDir.split('/');
+    for (const seg of importPath.replace(/\\/g, '/').split('/')) {
+      if (seg === '..') parts.pop();
+      else if (seg !== '.') parts.push(seg);
+    }
+    const resolved = parts.join('/');
+
+    const candidates = [
+      resolved,
+      resolved + '.ts', resolved + '.tsx', resolved + '.js', resolved + '.jsx', resolved + '.vue',
+      resolved + '/index.ts', resolved + '/index.tsx', resolved + '/index.js', resolved + '/index.jsx',
+    ];
+    for (const c of candidates) {
+      if (fileSet.has(c)) return c;
+    }
+    return null;
+  }
+
+  const importBase = importPath.split('/').pop()?.replace(/\.\w+$/, '') ?? '';
+  if (!importBase) return null;
+  const lower = importBase.toLowerCase();
+  for (const f of fileSet) {
+    const fBase = basename(f, getExt(f)).toLowerCase();
+    if (fBase === lower) return f;
+  }
+  return null;
+}
+
 function buildNodes(index: Record<string, FileIndexEntry>): GraphNode[] {
   return Object.values(index)
     .filter((entry) => !isGeneratedOrPb(entry.relativePath))
@@ -48,37 +84,52 @@ function buildNodes(index: Record<string, FileIndexEntry>): GraphNode[] {
       pattern: entry.pattern,
       domain: entry.domain,
       imports: entry.imports ?? [],
+      exports: entry.exports ?? [],
     }));
 }
 
-function detectRelations(nodes: GraphNode[]): PatternRelation[] {
+function detectRelations(
+  nodes: GraphNode[],
+  fileSet: Set<string>,
+  nodeByFile: Map<string, GraphNode>
+): { patternRelations: PatternRelation[]; fileRelations: Map<string, Set<string>> } {
   const relationMap = new Map<string, number>();
+  const fileRelations = new Map<string, Set<string>>();
+
   for (const node of nodes) {
+    const related = new Set<string>();
+
     for (const imp of node.imports) {
-      const related = nodes.find((n) => {
-        const fileName = basename(n.file, getExt(n.file));
-        const lower = n.file.toLowerCase();
-        return imp.includes(fileName) || imp.includes(lower) || imp.includes(n.pattern);
-      });
-      if (related && related.file !== node.file && related.pattern !== node.pattern) {
-        const key = `${node.pattern}->${related.pattern}`;
-        relationMap.set(key, (relationMap.get(key) || 0) + 1);
+      const target = resolveImportToFile(imp, node.file, fileSet);
+      if (target && target !== node.file) {
+        related.add(target);
+        const targetNode = nodeByFile.get(target);
+        if (targetNode && targetNode.pattern !== node.pattern) {
+          const key = `${node.pattern}->${targetNode.pattern}`;
+          relationMap.set(key, (relationMap.get(key) || 0) + 1);
+        }
       }
     }
+
     const sameDomain = nodes.filter(
-      (n) => n.domain === node.domain && n.file !== node.file && n.pattern !== node.pattern
+      (n) => n.domain === node.domain && n.domain !== 'global' && n.file !== node.file && n.pattern !== node.pattern
     );
     for (const d of sameDomain.slice(0, 10)) {
       const key = `${node.pattern}->${d.pattern}`;
-      relationMap.set(key, (relationMap.get(key) || 0) + 0.5);
+      relationMap.set(key, (relationMap.get(key) || 0) + 0.3);
+    }
+
+    if (related.size > 0) {
+      fileRelations.set(node.file, related);
     }
   }
-  const relations: PatternRelation[] = [];
+
+  const patternRelations: PatternRelation[] = [];
   for (const [key, weight] of relationMap.entries()) {
     const [from, to] = key.split('->');
-    if (from && to) relations.push({ from, to, weight });
+    if (from && to) patternRelations.push({ from, to, weight });
   }
-  return relations;
+  return { patternRelations, fileRelations };
 }
 
 const PATTERN_EXAMPLES: Record<string, string> = {
@@ -97,10 +148,13 @@ const PATTERN_EXAMPLES: Record<string, string> = {
   handler: 'Обработчик HTTP/запросов (Go handler, Python view и т.д.).',
   model: 'Модель данных, сущность БД, DTO.',
   repository: 'Слой доступа к данным (репозиторий).',
+  resolver: 'GraphQL-резолвер (Query, Mutation, Subscription).',
+  middleware: 'Middleware, Guard или Interceptor.',
   cmd: 'Точка входа приложения (Go cmd, main).',
   internal: 'Внутренние пакеты/модули (Go internal).',
   pkg: 'Переиспользуемые пакеты (Go pkg).',
   migrations: 'Миграции БД.',
+  test: 'Тестовый файл.',
   other: 'Прочие файлы проекта.',
 };
 
@@ -109,20 +163,21 @@ export function buildGraphFromIndex(
   workspacePath: string
 ): PatternGraphData {
   const nodes = buildNodes(index);
-  const relations = detectRelations(nodes);
+  const fileSet = new Set(nodes.map((n) => n.file));
+  const nodeByFile = new Map(nodes.map((n) => [n.file, n]));
+  const { patternRelations, fileRelations } = detectRelations(nodes, fileSet, nodeByFile);
 
   const examples: Record<string, string> = {};
   const patternSet = new Set(nodes.map((n) => n.pattern));
   for (const p of patternSet) {
-    if (PATTERN_EXAMPLES[p]) examples[p] = PATTERN_EXAMPLES[p];
-    else examples[p] = PATTERN_EXAMPLES.other;
+    examples[p] = PATTERN_EXAMPLES[p] ?? PATTERN_EXAMPLES.other;
   }
 
   const graph: PatternGraphData = {
     meta: {
       projectRoot: workspacePath,
       generatedAt: new Date().toISOString(),
-      version: '1.0',
+      version: '2.0',
     },
     patterns: {},
     filesByPattern: {},
@@ -137,11 +192,12 @@ export function buildGraphFromIndex(
     }
   }
 
-  for (const rel of relations) {
+  for (const rel of patternRelations) {
     if (!graph.patterns[rel.from]) graph.patterns[rel.from] = {};
     graph.patterns[rel.from][rel.to] = (graph.patterns[rel.from][rel.to] || 0) + rel.weight;
   }
 
+  // Symmetrical edges
   const symmetric: Record<string, Record<string, number>> = {};
   for (const pattern in graph.patterns) {
     if (!symmetric[pattern]) symmetric[pattern] = {};
@@ -153,26 +209,34 @@ export function buildGraphFromIndex(
   }
   graph.patterns = symmetric;
 
-  const maxWeights: Record<string, number> = {};
-  for (const pattern in graph.patterns) {
-    let max = 0;
-    for (const to in graph.patterns[pattern]) max = Math.max(max, graph.patterns[pattern][to]);
-    maxWeights[pattern] = max;
-  }
+  // Normalize weights to [0, 1]
   const minWeight = 0.05;
   const emptyPatterns: string[] = [];
   for (const pattern in graph.patterns) {
-    const max = maxWeights[pattern] || 1;
+    let max = 0;
+    for (const to in graph.patterns[pattern]) max = Math.max(max, graph.patterns[pattern][to]);
+    if (max === 0) { emptyPatterns.push(pattern); continue; }
     for (const to in graph.patterns[pattern]) {
-      const w = Math.min(1, Math.max(0, Math.round((graph.patterns[pattern][to] / max) * 100) / 100));
+      const w = Math.round((graph.patterns[pattern][to] / max) * 100) / 100;
       if (w < minWeight) delete graph.patterns[pattern][to];
-      else graph.patterns[pattern][to] = w;
+      else graph.patterns[pattern][to] = Math.min(1, w);
     }
     if (Object.keys(graph.patterns[pattern]).length === 0) emptyPatterns.push(pattern);
   }
   for (const p of emptyPatterns) delete graph.patterns[p];
 
-  graph.files = {};
+  // File-level relations
+  for (const [file, related] of fileRelations) {
+    const relatedPatterns = new Set<string>();
+    for (const r of related) {
+      const n = nodeByFile.get(r);
+      if (n) relatedPatterns.add(n.pattern);
+    }
+    graph.files[file] = {
+      relatedFiles: [...related].slice(0, 15),
+      relatedPatterns: [...relatedPatterns],
+    };
+  }
 
   return graph;
 }

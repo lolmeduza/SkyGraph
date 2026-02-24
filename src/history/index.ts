@@ -4,11 +4,14 @@ import type { ChatMessage, ChatState, HistoryIndex, PanelState } from './types';
 
 export type { ChatMessage, ChatState, HistoryIndex, PanelState } from './types';
 
-const DIR_NAME = '.projectCreator';
+const DIR_NAME = '.skyGraph';
 const CHATS_DIR = 'chats';
 const INDEX_FILE = 'index.json';
 const PANEL_STATE_FILE = 'panel-state.json';
 export const USER_INSTRUCTIONS_FILE = 'user-instructions.md';
+export const LLM_MISTAKES_FILE = 'llm-mistakes.md';
+
+const MAX_MISTAKES = 30; // не даём файлу расти бесконечно
 
 function workspaceDir(workspacePath: string): string {
   return path.join(workspacePath, DIR_NAME);
@@ -36,6 +39,50 @@ export function ensureUserInstructionsFile(workspacePath: string): void {
   if (!fs.existsSync(filePath)) {
     fs.writeFileSync(filePath, '', 'utf-8');
   }
+}
+
+export function getLLMMistakesPath(workspacePath: string): string {
+  return path.join(workspaceDir(workspacePath), LLM_MISTAKES_FILE);
+}
+
+export function readLLMMistakes(workspacePath: string): string | null {
+  const filePath = getLLMMistakesPath(workspacePath);
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8').trim();
+    return raw.length > 0 ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+export function appendLLMMistake(workspacePath: string, mistake: string): void {
+  const dir = workspaceDir(workspacePath);
+  ensureDir(dir);
+  const filePath = getLLMMistakesPath(workspacePath);
+
+  let existing: string[] = [];
+  if (fs.existsSync(filePath)) {
+    try {
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      existing = raw.split(/\n- /).map((s) => s.trim()).filter(Boolean);
+    } catch {
+      existing = [];
+    }
+  }
+
+  // дедупликация по первым 60 символам
+  const key = mistake.slice(0, 60).toLowerCase();
+  const alreadyKnown = existing.some((m) => m.slice(0, 60).toLowerCase() === key);
+  if (alreadyKnown) return;
+
+  existing.push(mistake);
+  if (existing.length > MAX_MISTAKES) {
+    existing = existing.slice(existing.length - MAX_MISTAKES);
+  }
+
+  const content = '# Ошибки LLM (автоматически)\n\n' + existing.map((m) => `- ${m}`).join('\n');
+  fs.writeFileSync(filePath, content, 'utf-8');
 }
 
 export function readUserInstructions(workspacePath: string): string | null {
