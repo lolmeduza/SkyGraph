@@ -48,9 +48,92 @@ body { margin: 0; font-family: var(--vscode-font-family); font-size: var(--vscod
   box-shadow: 0 0 8px 2px rgba(200,220,255,0.7);
   opacity: 0.4;
 }
+.starfield-launch-zone {
+  position: absolute;
+  top: 5%;
+  left: 50%;
+  width: 180px;
+  height: 180px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.starfield-loader {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 54px;
+  height: 54px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 32% 30%, rgba(245, 248, 255, 0.85), rgba(199, 206, 220, 0.55) 45%, rgba(120, 130, 145, 0.35) 75%, rgba(80, 88, 99, 0.25) 100%);
+  border: 1px solid rgba(188, 198, 214, 0.45);
+  box-shadow:
+    inset 0 0 18px rgba(236, 241, 255, 0.26),
+    0 0 28px rgba(184, 194, 224, 0.35);
+  opacity: 0.8;
+}
+.starfield-loader::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  border: 2px solid rgba(190, 200, 220, 0.35);
+  border-top-color: rgba(240, 245, 255, 0.78);
+  animation: starfield-loader-spin 2.4s linear infinite;
+}
+.starfield-launch {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+.starfield-launch .launch-star {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: rgba(228, 236, 255, 0.95);
+  opacity: 0;
+  box-shadow: 0 0 6px rgba(205, 220, 255, 0.95);
+  transform: translate(-50%, -50%);
+  animation: starfield-launch var(--duration, 2.2s) ease-out var(--delay, 0s) infinite;
+}
+.starfield-launch .launch-star::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 14px;
+  height: 1px;
+  transform: translate(-100%, -50%);
+  background: linear-gradient(90deg, rgba(182, 204, 245, 0), rgba(182, 204, 245, 0.5) 70%, rgba(235, 242, 255, 0.9));
+  border-radius: 999px;
+  opacity: 0.75;
+}
 @keyframes starfield-twinkle {
   0%, 100% { opacity: 0.25; transform: scale(var(--scale, 1)); }
   50% { opacity: 0.9; transform: scale(calc(var(--scale, 1) * 1.2)); }
+}
+@keyframes starfield-loader-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes starfield-launch {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%);
+  }
+  16% {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--dx, 0px)), calc(-50% + var(--dy, 180px)));
+  }
 }
 .starfield-title {
   position: relative;
@@ -136,6 +219,49 @@ body { margin: 0; font-family: var(--vscode-font-family); font-size: var(--vscod
 .code-copy-btn:hover { background-color: var(--vscode-button-secondaryHoverBackground); border-color: var(--vscode-focusBorder); }
 .message-content ul, .message-content ol { margin: 0.5em 0; padding-left: 1.5em; }
 .message-content li { margin: 0.25em 0; }
+.attached-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 4px 0 6px;
+}
+.attached-file-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  background: var(--vscode-badge-background, rgba(100,120,160,0.25));
+  color: var(--vscode-badge-foreground, var(--vscode-foreground));
+  border: 1px solid var(--vscode-focusBorder, rgba(100,120,180,0.35));
+  cursor: default;
+  max-width: 100%;
+  overflow: hidden;
+}
+.attached-file-tag .af-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+.attached-file-tag .af-range {
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.attached-file-tag .af-remove {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  padding: 0 0 0 2px;
+  cursor: pointer;
+  color: var(--vscode-descriptionForeground);
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.75;
+}
+.attached-file-tag .af-remove:hover { opacity: 1; color: var(--vscode-errorForeground); }
 .file-insert-toast { padding: 6px 10px; margin-bottom: 6px; font-size: 12px; border-radius: 4px; background: var(--vscode-inputValidation-infoBackground); border: 1px solid var(--vscode-inputValidation-infoBorder); color: var(--vscode-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .diff-view { border-top: 1px solid var(--vscode-widget-border); padding: 8px; height: 280px; flex-shrink: 0; display: flex; flex-direction: column; background: var(--vscode-editor-background); }
 .diff-view-header { font-size: 12px; font-weight: 600; margin-bottom: 4px; color: var(--vscode-foreground); }

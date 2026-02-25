@@ -65,7 +65,12 @@ export function appendLLMMistake(workspacePath: string, mistake: string): void {
   if (fs.existsSync(filePath)) {
     try {
       const raw = fs.readFileSync(filePath, 'utf-8');
-      existing = raw.split(/\n- /).map((s) => s.trim()).filter(Boolean);
+      // Читаем только строки вида "- ...", пропуская заголовки и пустые строки
+      existing = raw
+        .split('\n')
+        .filter((l) => l.startsWith('- '))
+        .map((l) => l.slice(2).trim())
+        .filter(Boolean);
     } catch {
       existing = [];
     }
@@ -81,7 +86,7 @@ export function appendLLMMistake(workspacePath: string, mistake: string): void {
     existing = existing.slice(existing.length - MAX_MISTAKES);
   }
 
-  const content = '# Ошибки LLM (автоматически)\n\n' + existing.map((m) => `- ${m}`).join('\n');
+  const content = '# Ошибки LLM (автоматически)\n\n' + existing.map((m) => `- ${m}`).join('\n') + '\n';
   fs.writeFileSync(filePath, content, 'utf-8');
 }
 

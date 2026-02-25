@@ -9,6 +9,7 @@ import { isIndexedFile } from './context/indexer/scanner';
 
 const INDEX_DEBOUNCE_MS = 1500;
 let indexDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let indexBuildInProgress = false;
 
 let outputChannel: vscode.OutputChannel | null = null;
 
@@ -52,8 +53,30 @@ function scheduleIndexUpdate(workspaceUri: vscode.Uri): void {
   if (indexDebounceTimer) clearTimeout(indexDebounceTimer);
   indexDebounceTimer = setTimeout(() => {
     indexDebounceTimer = null;
-    void updateIndex(workspaceUri);
+    void runIndexBuildTask(workspaceUri, 'update');
   }, INDEX_DEBOUNCE_MS);
+}
+
+function postIndexBuildStatus(): void {
+  const panel = getPanel();
+  if (!panel) return;
+  try {
+    panel.webview.postMessage({ type: 'indexBuildStatus', inProgress: indexBuildInProgress });
+  } catch {
+    // Panel can be disposed between checks.
+  }
+}
+
+async function runIndexBuildTask(workspaceUri: vscode.Uri, mode: 'initial' | 'update'): Promise<void> {
+  indexBuildInProgress = true;
+  postIndexBuildStatus();
+  try {
+    if (mode === 'initial') await getOrBuildIndex(workspaceUri);
+    else await updateIndex(workspaceUri);
+  } finally {
+    indexBuildInProgress = false;
+    postIndexBuildStatus();
+  }
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -67,7 +90,7 @@ export function activate(context: vscode.ExtensionContext): void {
   getOutputChannel().appendLine('[SkyGraph] Workspace: ' + (workspaceUri?.fsPath ?? 'none'));
   
   if (workspaceUri) {
-    void getOrBuildIndex(workspaceUri);
+    void runIndexBuildTask(workspaceUri, 'initial');
   }
   
   context.subscriptions.push(
@@ -102,6 +125,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('skyGraph.openPanel', () => {
       getOutputChannel().show(true);
       openPanel(context);
+      postIndexBuildStatus();
     }),
     vscode.commands.registerCommand('skyGraph.sendFileToLLM', () => {
       const editor = vscode.window.activeTextEditor;
@@ -116,12 +140,17 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       const rel = vscode.workspace.asRelativePath(doc.uri).replace(/\\/g, '/');
+      const selection = editor?.selection ?? null;
+      const hasSelection = selection !== null && !selection.isEmpty;
+      const fromLine = hasSelection && selection ? selection.start.line + 1 : undefined;
+      const toLine = hasSelection && selection ? selection.end.line + 1 : undefined;
       openPanel(context);
+      postIndexBuildStatus();
       const panel = getPanel();
       if (panel?.webview) {
         panel.reveal(vscode.ViewColumn.Beside);
         setTimeout(() => {
-          getPanel()?.webview.postMessage({ type: 'insertFile', path: rel });
+          getPanel()?.webview.postMessage({ type: 'insertFile', path: rel, fromLine, toLine });
         }, 200);
       }
     }),

@@ -45,6 +45,43 @@ async function readUserInstructionsFromWorkspace(workspaceUri: vscode.Uri): Prom
   }
 }
 
+async function readFileRange(
+  workspaceUri: vscode.Uri,
+  filePath: string,
+  fromLine?: number,
+  toLine?: number
+): Promise<string | null> {
+  try {
+    const uri = vscode.Uri.joinPath(workspaceUri, filePath.replace(/\\/g, '/'));
+    const data = await vscode.workspace.fs.readFile(uri);
+    const text = new TextDecoder().decode(data);
+    if (typeof fromLine !== 'number') return text;
+    const lines = text.split('\n');
+    const from = Math.max(0, fromLine - 1);
+    const to = typeof toLine === 'number' ? Math.min(lines.length - 1, toLine - 1) : from;
+    return lines.slice(from, to + 1).join('\n');
+  } catch {
+    return null;
+  }
+}
+
+async function buildAttachedFilesText(
+  workspaceUri: vscode.Uri,
+  files: { path: string; fromLine?: number; toLine?: number }[]
+): Promise<string> {
+  const parts: string[] = [];
+  for (const f of files) {
+    const content = await readFileRange(workspaceUri, f.path, f.fromLine, f.toLine);
+    if (content === null) continue;
+    const rangeLabel =
+      typeof f.fromLine === 'number'
+        ? ` (строки ${f.fromLine}${typeof f.toLine === 'number' && f.toLine !== f.fromLine ? '–' + f.toLine : ''})`
+        : '';
+    parts.push(`=== Файл: ${f.path}${rangeLabel} ===\n${content}`);
+  }
+  return parts.join('\n\n');
+}
+
 async function runLLMRequest(
   panel: vscode.WebviewPanel,
   opts: {
@@ -54,16 +91,24 @@ async function runLLMRequest(
     noContext: boolean;
     workspaceUri: vscode.Uri | undefined;
     logLabel?: string;
+    attachedFiles?: { path: string; fromLine?: number; toLine?: number }[];
   }
 ): Promise<void> {
-  const { chatId, userText, history, noContext, workspaceUri, logLabel } = opts;
+  const { chatId, userText, history, noContext, workspaceUri, logLabel, attachedFiles } = opts;
+
+  let effectiveUserText = userText;
+  if (attachedFiles && attachedFiles.length > 0 && workspaceUri) {
+    const filesText = await buildAttachedFilesText(workspaceUri, attachedFiles);
+    if (filesText) effectiveUserText = filesText + '\n\n' + userText;
+  }
+
   const [userInstructions, llmMistakes] = await Promise.all([
     workspaceUri ? readUserInstructionsFromWorkspace(workspaceUri) : Promise.resolve(null),
     workspaceUri ? Promise.resolve(readLLMMistakes(workspaceUri.fsPath)) : Promise.resolve(null),
   ]);
   const projectContext =
     !noContext && workspaceUri
-      ? await getFinderProjectContext(workspaceUri, getActiveFileRelative(workspaceUri), userText)
+      ? await getFinderProjectContext(workspaceUri, getActiveFileRelative(workspaceUri), effectiveUserText)
       : null;
   const len = !noContext ? (projectContext?.length ?? 0) : 0;
   if (!noContext) console.log(`[SkyGraph] Контекст проекта${logLabel ? ` (${logLabel})` : ''}:`, len ? `${len} символов` : 'нет');
@@ -75,7 +120,7 @@ async function runLLMRequest(
   const contextLimit = config?.contextWindow ?? 128000;
 
   let activeHistory = history;
-  const promptText = systemContent + activeHistory.map((m) => m.text).join('') + userText;
+  const promptText = systemContent + activeHistory.map((m) => m.text).join('') + effectiveUserText;
   if (estimateTokens(promptText) > contextLimit * CONTEXT_COMPRESS_THRESHOLD && activeHistory.length > 0) {
     const toCompress = activeHistory.map((m) => `${m.role}: ${m.text}`).join('\n\n');
     const summaryResult = await chat([
@@ -93,7 +138,7 @@ async function runLLMRequest(
       role: (m.role === 'assistant' ? 'assistant' : 'user') as 'user' | 'assistant',
       content: m.text,
     })),
-    { role: 'user', content: userText },
+    { role: 'user', content: effectiveUserText },
   ];
 
   void (chatWithTools(llmMessages, workspaceUri, {
@@ -110,7 +155,7 @@ async function runLLMRequest(
       const contextUsed =
         result.usage?.prompt_tokens ??
         result.contextTracker?.usedTokens ??
-        estimateTokens(systemContent + activeHistory.map((m) => m.text).join('') + userText + content);
+        estimateTokens(systemContent + activeHistory.map((m) => m.text).join('') + effectiveUserText + content);
       safePostMessage(panel, {
         type: 'assistantMessage',
         text: content,
@@ -173,6 +218,9 @@ export function openPanel(context: vscode.ExtensionContext): void {
       noProjectContext?: boolean;
       openIds?: string[];
       activeId?: string;
+      attachedFiles?: { path: string; fromLine?: number; toLine?: number }[];
+      fromLine?: number;
+      toLine?: number;
     }) => {
       const currentWorkspaceUri = getWorkspaceFolderUri();
       const currentWorkspacePath = currentWorkspaceUri?.fsPath ?? '';
@@ -207,6 +255,7 @@ export function openPanel(context: vscode.ExtensionContext): void {
           history: message.messages ?? [],
           noContext: message.noProjectContext === true,
           workspaceUri: currentWorkspaceUri,
+          attachedFiles: message.attachedFiles,
         });
         return;
       }

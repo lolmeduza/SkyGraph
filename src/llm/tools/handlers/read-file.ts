@@ -64,34 +64,54 @@ export const readFileHandler: ToolHandler = {
       }
       return content;
     } catch {
-      const resolved = await resolvePathFromIndex(normalized, workspaceUri);
-      if (!resolved) {
-        return `Файл не найден: ${normalized}. Проверь путь или используй search_files.`;
+      const candidates = await resolvePathCandidates(normalized, workspaceUri);
+      if (candidates.length === 0) {
+        return `Файл не найден: ${normalized}. Используй search_files или list_dir для проверки структуры.`;
       }
-      const resolvedUri = vscode.Uri.joinPath(workspaceUri, resolved);
-      const data = await vscode.workspace.fs.readFile(resolvedUri);
-      const fullContent = new TextDecoder().decode(data);
-      const content = extractLines(fullContent, startLine, endLine);
-      const out =
-        content.length > MAX_FILE_CHARS
-          ? content.slice(0, MAX_FILE_CHARS) + `\n...(обрезано, всего ${content.length} символов)`
-          : content;
-      return `Путь "${normalized}" не найден. Прочитан файл: ${resolved}\n\n${out}`;
+      // Если единственный кандидат — читаем без предупреждения пользователя о замене
+      const best = candidates[0];
+      const resolvedUri = vscode.Uri.joinPath(workspaceUri, best);
+      try {
+        const data = await vscode.workspace.fs.readFile(resolvedUri);
+        const fullContent = new TextDecoder().decode(data);
+        const content = extractLines(fullContent, startLine, endLine);
+        const out =
+          content.length > MAX_FILE_CHARS
+            ? content.slice(0, MAX_FILE_CHARS) + `\n...(обрезано, всего ${content.length} символов)`
+            : content;
+        const altHint =
+          candidates.length > 1
+            ? `\nДругие варианты: ${candidates.slice(1, 4).join(', ')}`
+            : '';
+        return `Путь "${normalized}" не найден. Прочитан: ${best}${altHint}\n\n${out}`;
+      } catch {
+        // best тоже не читается — перечислим все кандидаты
+        const list = candidates.slice(0, 5).join('\n  - ');
+        return `Файл не найден: ${normalized}.\nВозможные совпадения:\n  - ${list}\nИспользуй read_file с одним из этих путей.`;
+      }
     }
   },
 };
 
-async function resolvePathFromIndex(
+// Веса для депри-приоритизации «мусорных» путей
+const DEPRIORITIZED_SEGMENTS = ['static-react', 'static', 'legacy', 'dist', 'build', 'generated', '__generated__'];
+
+function pathPenalty(p: string): number {
+  const lower = p.toLowerCase();
+  return DEPRIORITIZED_SEGMENTS.reduce((acc, seg) => acc + (lower.includes('/' + seg + '/') || lower.startsWith(seg + '/') ? 1 : 0), 0);
+}
+
+async function resolvePathCandidates(
   requestedPath: string,
   workspaceUri: vscode.Uri
-): Promise<string | null> {
+): Promise<string[]> {
   const segments = requestedPath.split('/').filter(Boolean);
   const filename = segments.pop() ?? requestedPath;
   const stem = filename.replace(/\.[^.]+$/, '');
   const dirPrefix = segments.join('/');
 
   const index = await getIndex(workspaceUri);
-  if (!index) return null;
+  if (!index) return [];
 
   const paths = Object.keys(index.files);
   const exactName = paths.filter((p) => p.endsWith('/' + filename) || p === filename);
@@ -106,14 +126,19 @@ async function resolvePathFromIndex(
   });
 
   const candidates = [...exactName, ...byStem];
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) return [];
 
   candidates.sort((a, b) => {
+    // Сначала пути совпадающие с директорией запроса
     const aInDir = dirPrefix ? (a.startsWith(dirPrefix + '/') ? 0 : 1) : 0;
     const bInDir = dirPrefix ? (b.startsWith(dirPrefix + '/') ? 0 : 1) : 1;
     if (aInDir !== bInDir) return aInDir - bInDir;
+    // Потом штраф за static-react/legacy/dist
+    const penaltyDiff = pathPenalty(a) - pathPenalty(b);
+    if (penaltyDiff !== 0) return penaltyDiff;
+    // Более короткий путь предпочтительнее
     return a.split('/').length - b.split('/').length;
   });
 
-  return candidates[0];
+  return candidates.slice(0, 5);
 }

@@ -7,8 +7,10 @@ import { proposeEditsHandler } from './handlers/propose-edits';
 import { searchAndReadHandler } from './handlers/search-and-read';
 import { createCompositeToolHandler } from './handlers/create-composite-tool';
 import { thinkHandler } from './handlers/think';
+import { listDirHandler } from './handlers/list-dir';
 
 // Регистрируем все базовые инструменты
+register(listDirHandler);
 register(searchFilesHandler);
 register(readFileHandler);
 register(grepHandler);
@@ -29,4 +31,4 @@ export const TOOLS = getDefinitions();
 export const executeTool = execute;
 
 // Экспорт для использования в других инструментах
-export { searchFilesHandler, readFileHandler, grepHandler };
+export { searchFilesHandler, readFileHandler, grepHandler, listDirHandler };

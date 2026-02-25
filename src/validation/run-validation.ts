@@ -176,31 +176,46 @@ export async function runValidation(
         .filter((e) => /\.(tsx?|jsx?|vue|js|mjs|cjs)$/i.test(e.path))
         .map((e) => e.path.replace(/\\/g, '/'));
       if (eslintPaths.length > 0) {
-        console.log('[SkyGraph] Валидация: запуск eslint для', eslintPaths.length, 'файлов');
-        try {
-          const { execSync: run } = await import('child_process');
-          const out = run(`npx eslint ${eslintPaths.map((p) => JSON.stringify(p)).join(' ')} 2>&1`, {
-            cwd: root,
-            encoding: 'utf-8',
-            timeout: 30000,
-            maxBuffer: 1024 * 1024,
-          });
-          if (out && String(out).trim()) {
-            parts.push('--- eslint ---\n' + String(out).trim());
-            hasErrors = true;
-            console.log('[SkyGraph] Валидация: eslint — ошибки,', String(out).trim().length, 'симв.');
-          } else {
-            console.log('[SkyGraph] Валидация: eslint — ок');
-          }
-        } catch (err: unknown) {
-          const stderr = err && typeof err === 'object' && 'stderr' in err ? String((err as { stderr?: unknown }).stderr) : '';
-          const stdout = err && typeof err === 'object' && 'stdout' in err ? String((err as { stdout?: unknown }).stdout) : '';
-          const msg = err instanceof Error ? err.message : String(err);
-          const out = [stdout, stderr, msg].filter(Boolean).join('\n').trim();
-          if (out) {
-            parts.push('--- eslint ---\n' + out);
-            hasErrors = true;
-            console.log('[SkyGraph] Валидация: eslint — ошибка,', out.slice(0, 150));
+        // Проверяем, что eslint установлен локально — иначе npx скачает последнюю версию и сломается
+        const fsSync = await import('fs');
+        const eslintBin = path.join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'eslint.cmd' : 'eslint');
+        const eslintAvailable = fsSync.existsSync(eslintBin);
+        if (!eslintAvailable) {
+          console.log('[SkyGraph] Валидация: eslint не найден локально, пропускаем');
+        } else {
+          console.log('[SkyGraph] Валидация: запуск eslint для', eslintPaths.length, 'файлов');
+          try {
+            const { execSync: run } = await import('child_process');
+            const out = run(`${JSON.stringify(eslintBin)} ${eslintPaths.map((p) => JSON.stringify(p)).join(' ')} 2>&1`, {
+              cwd: root,
+              encoding: 'utf-8',
+              timeout: 30000,
+              maxBuffer: 1024 * 1024,
+            });
+            if (out && String(out).trim()) {
+              parts.push('--- eslint ---\n' + String(out).trim());
+              hasErrors = true;
+              console.log('[SkyGraph] Валидация: eslint — ошибки,', String(out).trim().length, 'симв.');
+            } else {
+              console.log('[SkyGraph] Валидация: eslint — ок');
+            }
+          } catch (err: unknown) {
+            const stderr = err && typeof err === 'object' && 'stderr' in err ? String((err as { stderr?: unknown }).stderr) : '';
+            const stdout = err && typeof err === 'object' && 'stdout' in err ? String((err as { stdout?: unknown }).stdout) : '';
+            const msg = err instanceof Error ? err.message : String(err);
+            const out = [stdout, stderr, msg].filter(Boolean).join('\n').trim();
+            // Игнорируем инфраструктурные ошибки (npm warn, Oops) — это не ошибки кода
+            const isInfraError = out.toLowerCase().includes('oops') ||
+              out.toLowerCase().includes('something went wrong') ||
+              out.toLowerCase().includes('npm warn') ||
+              out.toLowerCase().includes('will be installed');
+            if (out && !isInfraError) {
+              parts.push('--- eslint ---\n' + out);
+              hasErrors = true;
+              console.log('[SkyGraph] Валидация: eslint — ошибка,', out.slice(0, 150));
+            } else if (isInfraError) {
+              console.log('[SkyGraph] Валидация: eslint — инфраструктурная ошибка, игнорируем');
+            }
           }
         }
       }

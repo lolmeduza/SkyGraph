@@ -84,7 +84,18 @@ export const proposeEditsHandler: ToolHandler = {
       if (attempt >= 1 && workspaceUri) {
         const workspacePath = workspaceUri.fsPath;
         // Берём первую значимую строку ошибки как паттерн
-        const firstErrorLine = output.split('\n').find((l) => l.trim().length > 10 && !l.startsWith('---'));
+        const firstErrorLine = output
+          .split('\n')
+          .find((l) => {
+            const t = l.trim();
+            if (t.length <= 10 || t.startsWith('---')) return false;
+            // Пропускаем бессмысленные строки (npm warn, oops, инфраструктурные)
+            const lower = t.toLowerCase();
+            if (lower.includes('oops') || lower.includes('something went wrong')) return false;
+            if (lower.startsWith('npm warn') || lower.startsWith('npm notice')) return false;
+            if (lower.includes('will be installed') || lower.includes('installing packages')) return false;
+            return true;
+          });
         if (firstErrorLine) {
           // Убираем конкретные пути/имена файлов чтобы паттерн был общим
           const pattern = firstErrorLine
