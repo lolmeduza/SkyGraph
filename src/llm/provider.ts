@@ -216,7 +216,10 @@ export async function chatCompletion(
         }
         throw err;
       }
+      // Проверяем abort до парсинга — сервер мог ответить уже после отмены
+      if (options?.signal?.aborted) return null;
       const data: unknown = await res.json();
+      if (options?.signal?.aborted) return null;
       const msg = extractMessage(data);
       const usage = extractUsage(data);
       const content = msg?.content && typeof msg.content === 'string' ? msg.content : null;

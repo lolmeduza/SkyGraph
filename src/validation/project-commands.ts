@@ -33,14 +33,15 @@ async function findPackageJsonDirs(root: string, subdir?: string): Promise<strin
     }
   }
 
-  // Всегда проверяем корень
+  // Проверяем корень
   try {
     await fs.access(path.join(root, 'package.json'));
     if (!dirs.includes(root)) dirs.push(root);
   } catch { /* no package.json in root */ }
 
-  // Ищем package.json в подпапках первого уровня (монорепо)
-  if (dirs.length === 0) {
+  // Сканируем подпапки первого уровня ТОЛЬКО если явно задан subdir
+  // (без subdir в монорепо это вернёт команды всех проектов сразу — не то что нужно)
+  if (dirs.length === 0 && subdir) {
     try {
       const entries = await fs.readdir(root, { withFileTypes: true });
       for (const entry of entries) {

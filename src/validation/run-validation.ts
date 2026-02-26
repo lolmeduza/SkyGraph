@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { getProjectCommands } from './project-commands';
 
 export interface EditItem {
   path: string;
@@ -13,16 +12,7 @@ export interface RunValidationOptions {
 
 const VALIDATE_TIMEOUT_MS = 60000;
 const MAX_BUFFER = 2 * 1024 * 1024;
-
-function filterTscOutputToEditedFiles(fullOutput: string, editedPaths: string[]): string {
-  const normalized = editedPaths.map((p) => p.replace(/\\/g, '/'));
-  const lines = fullOutput.split('\n');
-  const kept = lines.filter((line) => {
-    const lineNorm = line.replace(/\\/g, '/');
-    return normalized.some((p) => lineNorm.includes(p));
-  });
-  return kept.join('\n').trim();
-}
+const ENABLE_VALIDATION_COMMANDS = false;
 
 async function runOneCommand(cwd: string, command: string): Promise<{ output: string; failed: boolean }> {
   try {
@@ -44,6 +34,18 @@ async function runOneCommand(cwd: string, command: string): Promise<{ output: st
   }
 }
 
+function inferSubdirFromPaths(filePaths: string[]): string | null {
+  if (filePaths.length === 0) return null;
+  const roots = filePaths.map((p) => {
+    const normalized = p.replace(/\\/g, '/').replace(/^\//, '');
+    const firstSlash = normalized.indexOf('/');
+    return firstSlash > 0 ? normalized.slice(0, firstSlash) : null;
+  });
+  const first = roots[0];
+  if (first && roots.every((r) => r === first)) return first;
+  return null;
+}
+
 export async function runValidation(
   workspaceUri: vscode.Uri,
   edits: EditItem[],
@@ -58,6 +60,7 @@ export async function runValidation(
   const backups: { path: string; content: Uint8Array; existed: boolean }[] = [];
 
   try {
+    // Backup + write
     for (const e of edits) {
       const normalized = e.path.replace(/\\/g, '/');
       const uri = vscode.Uri.joinPath(workspaceUri, normalized);
@@ -78,21 +81,10 @@ export async function runValidation(
 
     const parts: string[] = [];
     let hasErrors = false;
-    let commandsToRun: string[] | null = null;
 
-    if (options?.commands?.length) {
-      commandsToRun = options.commands;
-      console.log('[SkyGraph] Валидация: команды от LLM', commandsToRun.length);
-    } else {
-      const discovered = await getProjectCommands(workspaceUri);
-      if (discovered.all.length) {
-        commandsToRun = discovered.all;
-        console.log('[SkyGraph] Валидация: команды из проекта', commandsToRun.join(', '));
-      }
-    }
-
-    if (commandsToRun?.length) {
-      for (const cmd of commandsToRun) {
+    if (options?.commands?.length && ENABLE_VALIDATION_COMMANDS) {
+      console.log('[SkyGraph] Валидация: команды от LLM', options.commands.length);
+      for (const cmd of options.commands) {
         console.log('[SkyGraph] Валидация: запуск', cmd);
         const { output, failed } = await runOneCommand(root, cmd);
         if (failed || output) {
@@ -101,123 +93,11 @@ export async function runValidation(
         }
       }
     } else {
-      const fs = await import('fs/promises');
-      const tsconfig = path.join(root, 'tsconfig.json');
-      let hasTsc = false;
-      try {
-        await fs.access(tsconfig);
-        hasTsc = true;
-      } catch {
-        // no tsconfig
-      }
-      if (hasTsc) {
-        console.log('[SkyGraph] Валидация: запуск tsc --noEmit');
-        try {
-          const { execSync: run } = await import('child_process');
-          const out = run('npx tsc --noEmit 2>&1', {
-            cwd: root,
-            encoding: 'utf-8',
-            timeout: VALIDATE_TIMEOUT_MS,
-            maxBuffer: MAX_BUFFER,
-          });
-          const raw = out ? String(out).trim() : '';
-          const filtered = raw ? filterTscOutputToEditedFiles(raw, paths) : '';
-          if (filtered) {
-            parts.push('--- tsc (только изменённые файлы) ---\n' + filtered);
-            hasErrors = true;
-            console.log('[SkyGraph] Валидация: tsc — ошибки в изменённых файлах,', filtered.length, 'симв.');
-          } else if (raw) {
-            console.log('[SkyGraph] Валидация: tsc — ошибки есть в проекте, но не в изменённых файлах');
-          } else {
-            console.log('[SkyGraph] Валидация: tsc — ок');
-          }
-        } catch (err: unknown) {
-          const stderr = err && typeof err === 'object' && 'stderr' in err ? String((err as { stderr?: unknown }).stderr) : '';
-          const stdout = err && typeof err === 'object' && 'stdout' in err ? String((err as { stdout?: unknown }).stdout) : '';
-          const msg = err instanceof Error ? err.message : String(err);
-          const out = [stdout, stderr, msg].filter(Boolean).join('\n').trim();
-          if (out) {
-            const filtered = filterTscOutputToEditedFiles(out, paths);
-            if (filtered) {
-              parts.push('--- tsc (только изменённые файлы) ---\n' + filtered);
-              hasErrors = true;
-            }
-            console.log('[SkyGraph] Валидация: tsc — ошибка, в изменённых:', !!filtered);
-          }
-        }
-      }
-
-      const hasGo = edits.some((e) => e.path.replace(/\\/g, '/').endsWith('.go'));
-      if (hasGo) {
-        console.log('[SkyGraph] Валидация: запуск go build ./...');
-        try {
-          const { execSync: run } = await import('child_process');
-          run('go build ./... 2>&1', {
-            cwd: root,
-            encoding: 'utf-8',
-            timeout: VALIDATE_TIMEOUT_MS,
-            maxBuffer: MAX_BUFFER,
-          });
-          console.log('[SkyGraph] Валидация: go build — ок');
-        } catch (err: unknown) {
-          const stderr = err && typeof err === 'object' && 'stderr' in err ? String((err as { stderr?: unknown }).stderr) : '';
-          const stdout = err && typeof err === 'object' && 'stdout' in err ? String((err as { stdout?: unknown }).stdout) : '';
-          const msg = err instanceof Error ? err.message : String(err);
-          const out = [stdout, stderr, msg].filter(Boolean).join('\n').trim();
-          if (out) {
-            parts.push('--- go build ---\n' + out);
-            hasErrors = true;
-            console.log('[SkyGraph] Валидация: go build — ошибки,', out.slice(0, 150));
-          }
-        }
-      }
-
-      const eslintPaths = edits
-        .filter((e) => /\.(tsx?|jsx?|vue|js|mjs|cjs)$/i.test(e.path))
-        .map((e) => e.path.replace(/\\/g, '/'));
-      if (eslintPaths.length > 0) {
-        // Проверяем, что eslint установлен локально — иначе npx скачает последнюю версию и сломается
-        const fsSync = await import('fs');
-        const eslintBin = path.join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'eslint.cmd' : 'eslint');
-        const eslintAvailable = fsSync.existsSync(eslintBin);
-        if (!eslintAvailable) {
-          console.log('[SkyGraph] Валидация: eslint не найден локально, пропускаем');
-        } else {
-          console.log('[SkyGraph] Валидация: запуск eslint для', eslintPaths.length, 'файлов');
-          try {
-            const { execSync: run } = await import('child_process');
-            const out = run(`${JSON.stringify(eslintBin)} ${eslintPaths.map((p) => JSON.stringify(p)).join(' ')} 2>&1`, {
-              cwd: root,
-              encoding: 'utf-8',
-              timeout: 30000,
-              maxBuffer: 1024 * 1024,
-            });
-            if (out && String(out).trim()) {
-              parts.push('--- eslint ---\n' + String(out).trim());
-              hasErrors = true;
-              console.log('[SkyGraph] Валидация: eslint — ошибки,', String(out).trim().length, 'симв.');
-            } else {
-              console.log('[SkyGraph] Валидация: eslint — ок');
-            }
-          } catch (err: unknown) {
-            const stderr = err && typeof err === 'object' && 'stderr' in err ? String((err as { stderr?: unknown }).stderr) : '';
-            const stdout = err && typeof err === 'object' && 'stdout' in err ? String((err as { stdout?: unknown }).stdout) : '';
-            const msg = err instanceof Error ? err.message : String(err);
-            const out = [stdout, stderr, msg].filter(Boolean).join('\n').trim();
-            // Игнорируем инфраструктурные ошибки (npm warn, Oops) — это не ошибки кода
-            const isInfraError = out.toLowerCase().includes('oops') ||
-              out.toLowerCase().includes('something went wrong') ||
-              out.toLowerCase().includes('npm warn') ||
-              out.toLowerCase().includes('will be installed');
-            if (out && !isInfraError) {
-              parts.push('--- eslint ---\n' + out);
-              hasErrors = true;
-              console.log('[SkyGraph] Валидация: eslint — ошибка,', out.slice(0, 150));
-            } else if (isInfraError) {
-              console.log('[SkyGraph] Валидация: eslint — инфраструктурная ошибка, игнорируем');
-            }
-          }
-        }
+      // Ошибки видны через VSCode diagnostics (Problems) — запускать линтер не нужно
+      if (options?.commands?.length && !ENABLE_VALIDATION_COMMANDS) {
+        console.log('[SkyGraph] Валидация: запуск команд отключён флагом ENABLE_VALIDATION_COMMANDS=false');
+      } else {
+        console.log('[SkyGraph] Валидация: команды не переданы — пропускаем, ошибки видны через diagnostics');
       }
     }
 
@@ -242,12 +122,13 @@ export async function runValidation(
 }
 
 /**
- * Запускает линт/компиляцию для уже применённых файлов — без backup и restore.
- * Используется после того как пользователь нажал «Применить».
+ * Запускает validation_commands от LLM для уже применённых файлов — без backup/restore.
+ * Если LLM не передал команды — ничего не запускаем (ошибки обновятся в VSCode diagnostics автоматически).
  */
 export async function runValidationAfterApply(
   workspaceUri: vscode.Uri,
-  edits: EditItem[]
+  edits: EditItem[],
+  commands?: string[]
 ): Promise<{ output: string; hasErrors: boolean }> {
   if (edits.length === 0) return { output: '', hasErrors: false };
 
@@ -255,117 +136,25 @@ export async function runValidationAfterApply(
   const paths = edits.map((e) => e.path.replace(/\\/g, '/'));
   console.log('[SkyGraph] Post-apply валидация:', paths.length, 'файлов:', paths.join(', '));
 
+  if (!commands?.length || !ENABLE_VALIDATION_COMMANDS) {
+    if (commands?.length && !ENABLE_VALIDATION_COMMANDS) {
+      console.log('[SkyGraph] Post-apply: запуск команд отключён флагом ENABLE_VALIDATION_COMMANDS=false');
+    }
+    console.log('[SkyGraph] Post-apply: команды не переданы — пропускаем, ошибки обновятся в diagnostics');
+    return { output: '', hasErrors: false };
+  }
+
   const parts: string[] = [];
   let hasErrors = false;
+  const subdir = inferSubdirFromPaths(paths);
+  console.log('[SkyGraph] Post-apply: команды', subdir ? `(subdir: ${subdir})` : '(корень)', commands.join(', '));
 
-  const discovered = await getProjectCommands(workspaceUri);
-  if (discovered.all.length) {
-    for (const cmd of discovered.all) {
-      console.log('[SkyGraph] Post-apply: запуск', cmd);
-      const { output, failed } = await runOneCommand(root, cmd);
-      if (failed || output) {
-        parts.push(`--- ${cmd} ---\n${output}`);
-        if (failed) hasErrors = true;
-      }
-    }
-  } else {
-    const fs = await import('fs/promises');
-    const tsconfig = path.join(root, 'tsconfig.json');
-    let hasTsc = false;
-    try {
-      await fs.access(tsconfig);
-      hasTsc = true;
-    } catch { /* no tsconfig */ }
-
-    if (hasTsc) {
-      console.log('[SkyGraph] Post-apply: запуск tsc --noEmit');
-      try {
-        const { execSync: run } = await import('child_process');
-        const out = run('npx tsc --noEmit 2>&1', {
-          cwd: root,
-          encoding: 'utf-8',
-          timeout: VALIDATE_TIMEOUT_MS,
-          maxBuffer: MAX_BUFFER,
-        });
-        const raw = out ? String(out).trim() : '';
-        const filtered = raw ? filterTscOutputToEditedFiles(raw, paths) : '';
-        if (filtered) {
-          parts.push('--- tsc (изменённые файлы) ---\n' + filtered);
-          hasErrors = true;
-        }
-      } catch (err: unknown) {
-        const stderr = err && typeof err === 'object' && 'stderr' in err ? String((err as { stderr?: unknown }).stderr) : '';
-        const stdout = err && typeof err === 'object' && 'stdout' in err ? String((err as { stdout?: unknown }).stdout) : '';
-        const msg = err instanceof Error ? err.message : String(err);
-        const out = [stdout, stderr, msg].filter(Boolean).join('\n').trim();
-        if (out) {
-          const filtered = filterTscOutputToEditedFiles(out, paths);
-          if (filtered) {
-            parts.push('--- tsc (изменённые файлы) ---\n' + filtered);
-            hasErrors = true;
-          }
-        }
-      }
-    }
-
-    const hasGo = edits.some((e) => e.path.replace(/\\/g, '/').endsWith('.go'));
-    if (hasGo) {
-      console.log('[SkyGraph] Post-apply: запуск go build ./...');
-      try {
-        const { execSync: run } = await import('child_process');
-        run('go build ./... 2>&1', {
-          cwd: root,
-          encoding: 'utf-8',
-          timeout: VALIDATE_TIMEOUT_MS,
-          maxBuffer: MAX_BUFFER,
-        });
-      } catch (err: unknown) {
-        const stderr = err && typeof err === 'object' && 'stderr' in err ? String((err as { stderr?: unknown }).stderr) : '';
-        const stdout = err && typeof err === 'object' && 'stdout' in err ? String((err as { stdout?: unknown }).stdout) : '';
-        const msg = err instanceof Error ? err.message : String(err);
-        const out = [stdout, stderr, msg].filter(Boolean).join('\n').trim();
-        if (out) {
-          parts.push('--- go build ---\n' + out);
-          hasErrors = true;
-        }
-      }
-    }
-
-    const eslintPaths = edits
-      .filter((e) => /\.(tsx?|jsx?|vue|js|mjs|cjs)$/i.test(e.path))
-      .map((e) => e.path.replace(/\\/g, '/'));
-    if (eslintPaths.length > 0) {
-      const fsSync = await import('fs');
-      const eslintBin = path.join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'eslint.cmd' : 'eslint');
-      if (fsSync.existsSync(eslintBin)) {
-        console.log('[SkyGraph] Post-apply: запуск eslint для', eslintPaths.length, 'файлов');
-        try {
-          const { execSync: run } = await import('child_process');
-          const out = run(`${JSON.stringify(eslintBin)} ${eslintPaths.map((p) => JSON.stringify(p)).join(' ')} 2>&1`, {
-            cwd: root,
-            encoding: 'utf-8',
-            timeout: 30000,
-            maxBuffer: 1024 * 1024,
-          });
-          if (out && String(out).trim()) {
-            parts.push('--- eslint ---\n' + String(out).trim());
-            hasErrors = true;
-          }
-        } catch (err: unknown) {
-          const stderr = err && typeof err === 'object' && 'stderr' in err ? String((err as { stderr?: unknown }).stderr) : '';
-          const stdout = err && typeof err === 'object' && 'stdout' in err ? String((err as { stdout?: unknown }).stdout) : '';
-          const msg = err instanceof Error ? err.message : String(err);
-          const out = [stdout, stderr, msg].filter(Boolean).join('\n').trim();
-          const isInfraError = out.toLowerCase().includes('oops') ||
-            out.toLowerCase().includes('something went wrong') ||
-            out.toLowerCase().includes('npm warn') ||
-            out.toLowerCase().includes('will be installed');
-          if (out && !isInfraError) {
-            parts.push('--- eslint ---\n' + out);
-            hasErrors = true;
-          }
-        }
-      }
+  for (const cmd of commands) {
+    console.log('[SkyGraph] Post-apply: запуск', cmd);
+    const { output, failed } = await runOneCommand(root, cmd);
+    if (failed || output) {
+      parts.push(`--- ${cmd} ---\n${output}`);
+      if (failed) hasErrors = true;
     }
   }
 

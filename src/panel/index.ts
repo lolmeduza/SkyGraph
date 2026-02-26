@@ -7,7 +7,6 @@ import { estimateTokens } from '../llm/provider';
 import { getSystemPrompt, SUMMARIZE_SYSTEM_PROMPT } from '../llm/system-prompt';
 import { getFinderProjectContext, getActiveFileRelative } from '../context/finder-graph';
 import { openDiff, clearOriginals } from './diff-provider';
-import { runValidationAfterApply } from '../validation/run-validation';
 import type { PlanData } from '../llm/tools/handlers/create-plan';
 
 const CONTEXT_COMPRESS_THRESHOLD = 0.8;
@@ -380,7 +379,6 @@ export function openPanel(context: vscode.ExtensionContext): void {
         if (!toApply?.length) return;
         delete lastProposedEditsByChat[message.chatId];
         clearOriginals();
-        const chatId = message.chatId;
         const applyOne = async (e: { path: string; content: string }) => {
           const normalized = e.path.replace(/\\/g, '/');
           const uri = vscode.Uri.joinPath(currentWorkspaceUri, normalized);
@@ -396,26 +394,10 @@ export function openPanel(context: vscode.ExtensionContext): void {
           await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(e.content));
         };
         Promise.all(toApply.map(applyOne))
-          .then(async () => {
+          .then(() => {
             safePostMessage(panel, { type: 'diffApplied' });
-            // Запускаем линт на уже применённых файлах
-            try {
-              const { output, hasErrors } = await runValidationAfterApply(currentWorkspaceUri, toApply);
-              if (hasErrors && output) {
-                const autoText = `Правки применены. Линт/компилятор нашёл ошибки:\n\n${output}\n\nИсправь.`;
-                safePostMessage(panel, { type: 'autoUserMessage', chatId, text: autoText });
-                void runLLMRequest(panel, {
-                  chatId,
-                  userText: autoText,
-                  history: lastMessagesByChat[chatId] ?? [],
-                  noContext: false,
-                  workspaceUri: currentWorkspaceUri,
-                  logLabel: 'post-apply lint',
-                });
-              }
-            } catch (err) {
-              console.error('[SkyGraph] post-apply validation failed:', err);
-            }
+            clearOriginals();
+            // Ошибки видны в VSCode diagnostics и попадут в контекст при следующем запросе
           })
           .catch((err) => {
             console.error('[SkyGraph] applyEdits failed:', err);

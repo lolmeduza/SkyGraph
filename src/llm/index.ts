@@ -110,6 +110,11 @@ export async function chatWithTools(
       });
 
       for (const tc of response.tool_calls) {
+        if (signal?.aborted) {
+          console.log('[SkyGraph] Запрос отменён во время выполнения инструментов');
+          return { content: null, toolsUsed, contextTracker: tracker.getState() };
+        }
+
         toolsUsed.push(tc.function.name);
         onToolProgress?.(tc.function.name);
         
@@ -118,6 +123,10 @@ export async function chatWithTools(
         if (tc.function.name === 'propose_edits') proposeEditsAttempt++;
         const toolCtx = tc.function.name === 'propose_edits' ? { proposeEditsAttempt } : undefined;
         const result = await executeTool(tc, workspaceUri!, toolCtx);
+        if (signal?.aborted) {
+          console.log('[SkyGraph] Запрос отменён после выполнения', tc.function.name);
+          return { content: null, toolsUsed, contextTracker: tracker.getState() };
+        }
         const content = typeof result === 'object' && result && 'result' in result
           ? (result as ToolResultWithDiff).result
           : (result as string);
