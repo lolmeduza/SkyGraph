@@ -47,6 +47,68 @@ async function readFileContent(workspaceUri: vscode.Uri, relativePath: string): 
   }
 }
 
+const MAX_DIAG_FILES = 8;
+const MAX_ERRORS_PER_FILE = 5;
+const MAX_WARNINGS_PER_FILE = 2;
+
+function fmtDiag(d: vscode.Diagnostic): string {
+  const line = d.range.start.line + 1;
+  const col = d.range.start.character + 1;
+  const src = d.source ? `[${d.source}] ` : '';
+  const code = d.code ? ` (${String(typeof d.code === 'object' ? d.code.value : d.code)})` : '';
+  return `  L${line}:${col} ${src}${d.message}${code}`;
+}
+
+function getWorkspaceDiagnostics(workspaceUri: vscode.Uri, activeFileRelative?: string | null): string | null {
+  const wsPath = workspaceUri.fsPath.replace(/\\/g, '/').replace(/\/$/, '');
+  const all = vscode.languages.getDiagnostics();
+
+  // Фильтруем только файлы воркспейса с ошибками/предупреждениями
+  type FileDiag = { rel: string; errors: vscode.Diagnostic[]; warnings: vscode.Diagnostic[] };
+  const byFile: FileDiag[] = [];
+
+  for (const [uri, diags] of all) {
+    if (uri.scheme !== 'file') continue;
+    const uriPath = uri.fsPath.replace(/\\/g, '/');
+    if (!uriPath.startsWith(wsPath + '/')) continue;
+    const rel = uriPath.slice(wsPath.length + 1);
+    // Игнорируем node_modules, dist, .code-index
+    if (/node_modules|\/dist\/|\/.code-index\//.test(rel)) continue;
+    const errors = diags.filter((d) => d.severity === vscode.DiagnosticSeverity.Error);
+    const warnings = diags.filter((d) => d.severity === vscode.DiagnosticSeverity.Warning);
+    if (errors.length === 0 && warnings.length === 0) continue;
+    byFile.push({ rel, errors, warnings });
+  }
+
+  if (byFile.length === 0) return null;
+
+  // Активный файл — первым, остальные по числу ошибок
+  byFile.sort((a, b) => {
+    if (a.rel === activeFileRelative) return -1;
+    if (b.rel === activeFileRelative) return 1;
+    return b.errors.length - a.errors.length;
+  });
+
+  const sections: string[] = [];
+  for (const { rel, errors, warnings } of byFile.slice(0, MAX_DIAG_FILES)) {
+    const lines: string[] = [`${rel}:`];
+    if (errors.length > 0) {
+      lines.push(...errors.slice(0, MAX_ERRORS_PER_FILE).map(fmtDiag));
+      if (errors.length > MAX_ERRORS_PER_FILE) lines.push(`  ... ещё ${errors.length - MAX_ERRORS_PER_FILE} ошибок`);
+    }
+    if (warnings.length > 0) {
+      lines.push(...warnings.slice(0, MAX_WARNINGS_PER_FILE).map(fmtDiag));
+      if (warnings.length > MAX_WARNINGS_PER_FILE) lines.push(`  ... ещё ${warnings.length - MAX_WARNINGS_PER_FILE} предупреждений`);
+    }
+    sections.push(lines.join('\n'));
+  }
+
+  const skipped = byFile.length - Math.min(byFile.length, MAX_DIAG_FILES);
+  if (skipped > 0) sections.push(`... и ещё ${skipped} файлов с ошибками`);
+
+  return sections.join('\n\n');
+}
+
 export async function getFinderProjectContext(
   workspaceUri: vscode.Uri,
   activeFileRelative?: string | null,
@@ -68,6 +130,12 @@ export async function getFinderProjectContext(
   }
   const parts: string[] = [];
   const index = await getIndex(workspaceUri);
+
+  // Диагностика по всему воркспейсу — всегда, независимо от активного файла
+  const diags = getWorkspaceDiagnostics(workspaceUri, activeFileRelative);
+  if (diags) {
+    parts.push(`=== Диагностика (Problems) ===\n${diags}`);
+  }
 
   // 1. Содержимое активного файла + прямые соседи по графу импортов
   if (activeFileRelative) {

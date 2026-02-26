@@ -1,7 +1,7 @@
-import * as vscode from 'vscode';
 import { ToolHandler, ToolResultWithDiff } from '../types';
 import { runValidation } from '../../../validation/run-validation';
 import { appendLLMMistake } from '../../../history';
+import { readFileWithFallback } from './path-utils';
 
 export const proposeEditsHandler: ToolHandler = {
   name: 'propose_edits',
@@ -42,30 +42,53 @@ export const proposeEditsHandler: ToolHandler = {
     }
 
     const edits: { path: string; content: string }[] = [];
+    const suspiciousEdits: string[] = [];
     for (const item of raw) {
       if (item && typeof item === 'object' && 'path' in item && 'content' in item) {
-        const path = String((item as { path: unknown }).path).replace(/\\/g, '/');
+        const filePath = String((item as { path: unknown }).path).replace(/\\/g, '/');
         const content =
           typeof (item as { content: unknown }).content === 'string'
             ? (item as { content: string }).content
             : String((item as { content: unknown }).content);
-        edits.push({ path, content });
+
+        // Отклоняем явно бессмысленный контент — заглушки вместо реального кода
+        const trimmed = content.trim();
+        const isJsonFile = filePath.endsWith('.json');
+        const isPlaceholder =
+          trimmed === '{}' ||
+          trimmed === '[]' ||
+          trimmed === '' ||
+          (!isJsonFile && (trimmed === '{}' || trimmed === '[]'));
+        if (isPlaceholder) {
+          suspiciousEdits.push(filePath);
+          continue;
+        }
+
+        edits.push({ path: filePath, content });
       }
+    }
+
+    if (suspiciousEdits.length > 0 && edits.length === 0) {
+      return (
+        `ОШИБКА: Контент для файлов [${suspiciousEdits.join(', ')}] содержит только заглушку ("{}"). ` +
+        `Передай реальный полный код файла в поле content. Сначала прочитай файл через read_file, ` +
+        `внеси изменения и отправь обновлённую версию.`
+      );
+    }
+    if (suspiciousEdits.length > 0) {
+      // Предупреждаем но продолжаем с остальными правками
+      console.warn(`[SkyGraph] propose_edits: пропущены заглушки для ${suspiciousEdits.join(', ')}`);
     }
 
     if (edits.length === 0) return 'Нет валидных правок в edits.';
 
     const originals: { path: string; originalContent: string; proposedContent: string }[] = [];
     for (const e of edits) {
-      const uri = vscode.Uri.joinPath(workspaceUri, e.path);
-      let originalContent = '';
-      try {
-        const data = await vscode.workspace.fs.readFile(uri);
-        originalContent = new TextDecoder().decode(data);
-      } catch {
-        // new file
-      }
-      originals.push({ path: e.path, originalContent, proposedContent: e.content });
+      const found = await readFileWithFallback(e.path, workspaceUri);
+      const originalContent = found?.content ?? '';
+      // Если путь разрешился иначе — используем разрешённый путь для диффа
+      const resolvedPath = found?.resolvedPath ?? e.path;
+      originals.push({ path: resolvedPath, originalContent, proposedContent: e.content });
     }
 
     const validationCommands = Array.isArray(args.validation_commands)

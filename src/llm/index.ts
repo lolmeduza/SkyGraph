@@ -41,6 +41,7 @@ export interface ChatWithToolsOptions {
     edits: { path: string; content: string }[]
   ) => void;
   onCreatePlan?: (plan: import('./tools/handlers/create-plan').PlanData) => void;
+  signal?: AbortSignal;
 }
 
 export async function chatWithTools(
@@ -52,6 +53,7 @@ export async function chatWithTools(
   const onProposeEditsDiff = typeof options === 'object' ? options?.onProposeEditsDiff : undefined;
   const onThinkResult = typeof options === 'object' ? options?.onThinkResult : undefined;
   const onCreatePlan = typeof options === 'object' ? options?.onCreatePlan : undefined;
+  const signal = typeof options === 'object' ? options?.signal : undefined;
 
   const config = currentConfig ?? getLLMConfig();
   if (!config?.enabled) return { content: null };
@@ -60,6 +62,9 @@ export async function chatWithTools(
   const loop: LLMMessage[] = [...messages];
   const toolsUsed: string[] = [];
   let proposeEditsAttempt = 0;
+  // Накапливаем диффы — показываем только после финального ответа LLM
+  const pendingDiffFiles = new Map<string, { path: string; originalContent: string; proposedContent: string }>();
+  let pendingDiffEdits = new Map<string, { path: string; content: string }>();
 
   const contextLimit = config.contextWindow ?? 128000;
   const tracker = new ContextTracker(contextLimit);
@@ -70,14 +75,21 @@ export async function chatWithTools(
   console.log(`[SkyGraph] Messages: ${loop.length}, user query: ${String(loop[loop.length - 1]?.content ?? '').slice(0, 120)}`);
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    if (signal?.aborted) {
+      console.log('[SkyGraph] Запрос отменён до раунда', round);
+      return { content: null, toolsUsed, contextTracker: tracker.getState() };
+    }
+
     const tok = tracker.getUsed();
     console.log(`[SkyGraph] → Sending ${loop.length} messages (~${tok} tokens) to LLM`);
 
     const response = await chatCompletion(config, loop, {
       tools: useTools ? TOOLS : undefined,
+      signal,
     });
     
     if (!response) {
+      if (signal?.aborted) return { content: null, toolsUsed, contextTracker: tracker.getState() };
       console.error('[SkyGraph] ✗ LLM returned null response');
       return { content: null, toolsUsed };
     }
@@ -128,12 +140,19 @@ export async function chatWithTools(
         }
 
         if (typeof result === 'object' && result?.diffPayload) {
-          let edits: { path: string; content: string }[] = [];
+          // Накапливаем — для каждого файла берём последнюю версию
+          for (const f of result.diffPayload!.files) {
+            pendingDiffFiles.set(f.path, f);
+          }
           try {
             const args = JSON.parse(tc.function.arguments);
-            if (Array.isArray(args.edits)) edits = args.edits.map((e: { path: string; content: string }) => ({ path: String(e.path).replace(/\\/g, '/'), content: typeof e.content === 'string' ? e.content : String(e.content) }));
+            if (Array.isArray(args.edits)) {
+              for (const e of args.edits as { path: string; content: string }[]) {
+                const p = String(e.path).replace(/\\/g, '/');
+                pendingDiffEdits.set(p, { path: p, content: typeof e.content === 'string' ? e.content : String(e.content) });
+              }
+            }
           } catch { /* ignore */ }
-          onProposeEditsDiff?.(result.diffPayload!.files, edits);
         }
         tracker.add('tool', content);
         loop.push({
@@ -148,10 +167,16 @@ export async function chatWithTools(
     const out = response.content ?? null;
     if (out) tracker.add('assistant', out);
     console.log(`[SkyGraph] ✓ Final answer (${out?.length ?? 0} chars)${toolsUsed.length ? `, used tools: ${toolsUsed.join(' → ')}` : ''}`);
+    if (pendingDiffFiles.size > 0 && onProposeEditsDiff) {
+      onProposeEditsDiff([...pendingDiffFiles.values()], [...pendingDiffEdits.values()]);
+    }
     return { content: out, usage: response.usage, toolsUsed, contextTracker: tracker.getState() };
   }
 
   console.warn('[SkyGraph] ⚠ Agent loop hit max rounds (20)');
+  if (pendingDiffFiles.size > 0 && onProposeEditsDiff) {
+    onProposeEditsDiff([...pendingDiffFiles.values()], [...pendingDiffEdits.values()]);
+  }
   const last = loop.filter((m) => m.role === 'assistant' && m.content).pop();
   return { content: last?.content ?? null, toolsUsed, contextTracker: tracker.getState() };
 }

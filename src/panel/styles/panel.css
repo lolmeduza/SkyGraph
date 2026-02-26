@@ -280,6 +280,16 @@ body { margin: 0; font-family: var(--vscode-font-family); font-size: var(--vscod
 .diff-line.diff-same { color: var(--vscode-editor-foreground); }
 .diff-line.diff-remove { background: rgba(255, 0, 0, 0.15); color: var(--vscode-editorError-foreground, #f14c4c); }
 .diff-line.diff-add { background: rgba(0, 255, 0, 0.15); color: var(--vscode-editorSuggestWidget-highlightForeground, #89d185); }
+.diff-file-row { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 4px; font-size: 11px; margin-bottom: 3px; background: var(--vscode-list-inactiveSelectionBackground); transition: background 0.15s; }
+.diff-file-row.diff-row-active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.diff-file-row .diff-file-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diff-file-row .diff-open-file-btn { flex-shrink: 0; padding: 2px 8px; font-size: 11px; border-radius: 3px; cursor: pointer; border: 1px solid var(--vscode-button-border); background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+.diff-file-row .diff-open-file-btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+.diff-nav { display: flex; align-items: center; gap: 8px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--vscode-widget-border); }
+.diff-nav button { padding: 3px 10px; font-size: 11px; border-radius: 3px; cursor: pointer; border: 1px solid var(--vscode-button-border); background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+.diff-nav button:hover:not(:disabled) { background: var(--vscode-button-secondaryHoverBackground); }
+.diff-nav button:disabled { opacity: 0.4; cursor: default; }
+.diff-nav-counter { font-size: 11px; color: var(--vscode-descriptionForeground); flex: 1; text-align: center; }
 .diff-view-actions { display: flex; gap: 8px; margin-top: 8px; flex-shrink: 0; }
 .diff-apply-btn, .diff-reject-btn { padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; border: 1px solid; }
 .diff-apply-btn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: var(--vscode-button-border); }
@@ -313,7 +323,10 @@ body { margin: 0; font-family: var(--vscode-font-family); font-size: var(--vscod
   font-weight: 500;
 }
 .send-btn:hover { background: var(--vscode-button-hoverBackground); }
+.send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .send-btn:focus { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.stop-btn { padding: 10px 14px; background: var(--vscode-inputValidation-errorBackground, #5a1d1d); color: var(--vscode-errorForeground, #f48771); border: 1px solid var(--vscode-inputValidation-errorBorder, #be1100); border-radius: 10px; cursor: pointer; font-size: 14px; line-height: 1; flex-shrink: 0; }
+.stop-btn:hover { opacity: 0.85; }
 .think-block { margin-bottom: 8px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; overflow: hidden; background: var(--vscode-editor-inactiveSelectionBackground, rgba(128,128,128,0.08)); }
 .think-summary { padding: 6px 10px; cursor: pointer; font-size: 12px; font-weight: 500; color: var(--vscode-descriptionForeground); user-select: none; list-style: none; display: flex; align-items: center; gap: 6px; }
 .think-summary::before { content: "🧠"; font-size: 13px; }

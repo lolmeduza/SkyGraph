@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { ToolHandler } from '../types';
-import { getIndex } from '../../../context/indexer';
+import { resolvePathCandidates } from './path-utils';
 
 const MAX_FILE_CHARS = 12000;
 
@@ -91,48 +91,3 @@ export const readFileHandler: ToolHandler = {
   },
 };
 
-const DEPRIORITIZED_SEGMENTS = ['static-react', 'static', 'legacy', 'dist', 'build', 'generated', '__generated__'];
-
-function pathPenalty(p: string): number {
-  const lower = p.toLowerCase();
-  return DEPRIORITIZED_SEGMENTS.reduce((acc, seg) => acc + (lower.includes('/' + seg + '/') || lower.startsWith(seg + '/') ? 1 : 0), 0);
-}
-
-async function resolvePathCandidates(
-  requestedPath: string,
-  workspaceUri: vscode.Uri
-): Promise<string[]> {
-  const segments = requestedPath.split('/').filter(Boolean);
-  const filename = segments.pop() ?? requestedPath;
-  const stem = filename.replace(/\.[^.]+$/, '');
-  const dirPrefix = segments.join('/');
-
-  const index = await getIndex(workspaceUri);
-  if (!index) return [];
-
-  const paths = Object.keys(index.files);
-  const exactName = paths.filter((p) => p.endsWith('/' + filename) || p === filename);
-  const byStem = paths.filter((p) => {
-    if (exactName.includes(p)) return false;
-    const lower = p.toLowerCase();
-    return (
-      (lower.includes('/' + stem.toLowerCase() + '/') ||
-        lower.endsWith('/' + stem.toLowerCase())) &&
-      /\.(tsx?|jsx?|vue|go|py)$/i.test(p)
-    );
-  });
-
-  const candidates = [...exactName, ...byStem];
-  if (candidates.length === 0) return [];
-
-  candidates.sort((a, b) => {
-    const aInDir = dirPrefix ? (a.startsWith(dirPrefix + '/') ? 0 : 1) : 0;
-    const bInDir = dirPrefix ? (b.startsWith(dirPrefix + '/') ? 0 : 1) : 1;
-    if (aInDir !== bInDir) return aInDir - bInDir;
-    const penaltyDiff = pathPenalty(a) - pathPenalty(b);
-    if (penaltyDiff !== 0) return penaltyDiff;
-    return a.split('/').length - b.split('/').length;
-  });
-
-  return candidates.slice(0, 5);
-}

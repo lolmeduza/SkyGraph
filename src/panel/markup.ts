@@ -70,6 +70,7 @@ export function getPanelMarkup(): string {
         <div class="input-row">
           <textarea id="input" placeholder="Запрос (Enter — новая строка, Ctrl+Enter — отправить)" rows="2"></textarea>
           <button class="send-btn" id="sendBtn">Отправить</button>
+          <button class="stop-btn" id="stopBtn" style="display:none" title="Остановить запрос">■</button>
         </div>
         <div class="context-footer" id="contextFooter"></div>
       </div>

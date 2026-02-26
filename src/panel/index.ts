@@ -18,6 +18,7 @@ let currentPanel: vscode.WebviewPanel | null = null;
 const lastProposedEditsByChat: Record<string, { path: string; content: string }[]> = {};
 const lastMessagesByChat: Record<string, { role: string; text: string }[]> = {};
 const pendingPlansByChat: Record<string, PlanData> = {};
+const abortControllersByChat: Record<string, AbortController> = {};
 
 function safePostMessage(panel: vscode.WebviewPanel, msg: object): void {
   try {
@@ -146,6 +147,12 @@ async function runLLMRequest(
     { role: 'user', content: effectiveUserText },
   ];
 
+  // Отменяем предыдущий запрос для этого чата если был
+  abortControllersByChat[chatId]?.abort();
+  const abortController = new AbortController();
+  abortControllersByChat[chatId] = abortController;
+  safePostMessage(panel, { type: 'requestStarted', chatId });
+
   void (chatWithTools(llmMessages, workspaceUri, {
     onToolProgress: (toolName) => safePostMessage(panel, { type: 'toolProgress', tool: toolName, chatId }),
     onThinkResult: (reasoning) => safePostMessage(panel, { type: 'thinkResult', reasoning, chatId }),
@@ -153,20 +160,24 @@ async function runLLMRequest(
       pendingPlansByChat[chatId] = plan;
       safePostMessage(panel, { type: 'showPlan', plan, chatId });
     },
+    signal: abortController.signal,
     onProposeEditsDiff: (files, edits) => {
       lastProposedEditsByChat[chatId] = edits;
-      // Уведомляем webview (для кнопки "Применить")
+      // Уведомляем webview (список файлов + кнопки навигации)
       safePostMessage(panel, { type: 'showDiff', files, chatId });
-      // Открываем нативный diff editor для каждого изменённого файла
-      if (workspaceUri) {
-        for (const file of files) {
-          const modifiedUri = vscode.Uri.joinPath(workspaceUri, file.path.replace(/\\/g, '/'));
-          void openDiff(file.path, file.originalContent, modifiedUri);
-        }
+      // Первый файл открываем сразу — остальные по клику из панели
+      if (workspaceUri && files.length > 0) {
+        const first = files[0];
+        const modifiedUri = vscode.Uri.joinPath(workspaceUri, first.path.replace(/\\/g, '/'));
+        void openDiff(first.path, first.originalContent, modifiedUri);
       }
     },
   })
     .then((result) => {
+      delete abortControllersByChat[chatId];
+      safePostMessage(panel, { type: 'requestFinished', chatId });
+      // Если запрос был отменён — не показываем сообщение
+      if (abortController.signal.aborted) return;
       const content = result.content ?? 'Ошибка или LLM не настроен.';
       const isError = result.content === null;
       const contextUsed =
@@ -184,6 +195,9 @@ async function runLLMRequest(
       });
     })
     .catch((err) => {
+      delete abortControllersByChat[chatId];
+      safePostMessage(panel, { type: 'requestFinished', chatId });
+      if (abortController.signal.aborted) return;
       const text = err?.message?.includes('504')
         ? 'Таймаут (504 Gateway Time-out). Увеличьте таймаут прокси или повторите позже.'
         : String(err?.message ?? err);
@@ -231,6 +245,8 @@ export function openPanel(context: vscode.ExtensionContext): void {
       chatId?: string;
       name?: string;
       path?: string;
+      originalContent?: string;
+      proposedContent?: string;
       messages?: { role: string; text: string }[];
       noProjectContext?: boolean;
       openIds?: string[];
@@ -260,6 +276,15 @@ export function openPanel(context: vscode.ExtensionContext): void {
         const activeId = message.activeId;
         if (Array.isArray(openIds) && typeof activeId === 'string') {
           savePanelState(currentWorkspacePath, openIds, activeId);
+        }
+        return;
+      }
+      if (message.type === 'stopRequest' && message.chatId) {
+        const ctrl = abortControllersByChat[message.chatId];
+        if (ctrl) {
+          ctrl.abort();
+          delete abortControllersByChat[message.chatId];
+          safePostMessage(panel, { type: 'requestFinished', chatId: message.chatId });
         }
         return;
       }
@@ -310,6 +335,14 @@ export function openPanel(context: vscode.ExtensionContext): void {
         if (workspaceUri) {
           const uri = vscode.Uri.joinPath(workspaceUri, message.path.replace(/\\/g, '/'));
           vscode.window.showTextDocument(uri, { preview: false, viewColumn: vscode.ViewColumn.One });
+        }
+        return;
+      }
+      if (message.type === 'openFileDiff' && typeof message.path === 'string') {
+        const workspaceUri = getWorkspaceFolderUri();
+        if (workspaceUri) {
+          const modifiedUri = vscode.Uri.joinPath(workspaceUri, message.path.replace(/\\/g, '/'));
+          void openDiff(message.path, message.originalContent ?? '', modifiedUri);
         }
         return;
       }
