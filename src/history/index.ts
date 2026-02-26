@@ -56,6 +56,33 @@ export function readLLMMistakes(workspacePath: string): string | null {
   }
 }
 
+function normalizeMistakeToRule(mistake: string): string {
+  const lower = mistake.toLowerCase();
+
+  // TS ошибки — извлекаем код и даём понятное правило
+  const tsMatch = mistake.match(/\b(TS\d{4})\b[:\s]+(.{0,120})/i);
+  if (tsMatch) {
+    const code = tsMatch[1].toUpperCase();
+    const detail = tsMatch[2].trim().replace(/['"][^'"]{30,}['"]/g, '"<value>"').replace(/\b\w+\.(ts|tsx|js)\b/g, '<file>');
+    return `${code}: ${detail}`;
+  }
+
+  // ESLint ошибки
+  if (lower.includes('eslint') || mistake.match(/@\w+\/\w+|no-\w+|prefer-\w+/)) {
+    const ruleMatch = mistake.match(/([@\w/-]+rule|no-[\w-]+|prefer-[\w-]+|[\w-]+\/[\w-]+)/i);
+    const rule = ruleMatch ? ruleMatch[1] : 'eslint';
+    return `eslint/${rule}: нарушение правила линтера — проверь код перед propose_edits`;
+  }
+
+  // Go ошибки
+  if (lower.includes('undefined') && lower.includes('go')) {
+    return `go: undefined symbol — проверь импорты и имена перед propose_edits`;
+  }
+
+  // Убираем префикс "Ошибка валидации (попытка N):" — он шумный
+  return mistake.replace(/^Ошибка валидации \(попытка \d+\):\s*/i, '').trim();
+}
+
 export function appendLLMMistake(workspacePath: string, mistake: string): void {
   const dir = workspaceDir(workspacePath);
   ensureDir(dir);
@@ -76,12 +103,14 @@ export function appendLLMMistake(workspacePath: string, mistake: string): void {
     }
   }
 
-  // дедупликация по первым 60 символам
-  const key = mistake.slice(0, 60).toLowerCase();
-  const alreadyKnown = existing.some((m) => m.slice(0, 60).toLowerCase() === key);
+  const rule = normalizeMistakeToRule(mistake);
+
+  // Дедупликация: по коду ошибки (TS2345, eslint/rule) или по первым 60 символам
+  const ruleKey = rule.slice(0, 60).toLowerCase();
+  const alreadyKnown = existing.some((m) => m.slice(0, 60).toLowerCase() === ruleKey);
   if (alreadyKnown) return;
 
-  existing.push(mistake);
+  existing.push(rule);
   if (existing.length > MAX_MISTAKES) {
     existing = existing.slice(existing.length - MAX_MISTAKES);
   }

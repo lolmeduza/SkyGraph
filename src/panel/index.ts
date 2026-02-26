@@ -6,6 +6,9 @@ import { getLLMConfig } from '../llm/config';
 import { estimateTokens } from '../llm/provider';
 import { getSystemPrompt, SUMMARIZE_SYSTEM_PROMPT } from '../llm/system-prompt';
 import { getFinderProjectContext, getActiveFileRelative } from '../context/finder-graph';
+import { openDiff, clearOriginals } from './diff-provider';
+import { runValidationAfterApply } from '../validation/run-validation';
+import type { PlanData } from '../llm/tools/handlers/create-plan';
 
 const CONTEXT_COMPRESS_THRESHOLD = 0.8;
 const USER_INSTRUCTIONS_FILE = 'user-instructions.md';
@@ -13,6 +16,8 @@ const viewType = 'skyGraph.panel';
 
 let currentPanel: vscode.WebviewPanel | null = null;
 const lastProposedEditsByChat: Record<string, { path: string; content: string }[]> = {};
+const lastMessagesByChat: Record<string, { role: string; text: string }[]> = {};
+const pendingPlansByChat: Record<string, PlanData> = {};
 
 function safePostMessage(panel: vscode.WebviewPanel, msg: object): void {
   try {
@@ -144,9 +149,21 @@ async function runLLMRequest(
   void (chatWithTools(llmMessages, workspaceUri, {
     onToolProgress: (toolName) => safePostMessage(panel, { type: 'toolProgress', tool: toolName, chatId }),
     onThinkResult: (reasoning) => safePostMessage(panel, { type: 'thinkResult', reasoning, chatId }),
+    onCreatePlan: (plan) => {
+      pendingPlansByChat[chatId] = plan;
+      safePostMessage(panel, { type: 'showPlan', plan, chatId });
+    },
     onProposeEditsDiff: (files, edits) => {
       lastProposedEditsByChat[chatId] = edits;
+      // Уведомляем webview (для кнопки "Применить")
       safePostMessage(panel, { type: 'showDiff', files, chatId });
+      // Открываем нативный diff editor для каждого изменённого файла
+      if (workspaceUri) {
+        for (const file of files) {
+          const modifiedUri = vscode.Uri.joinPath(workspaceUri, file.path.replace(/\\/g, '/'));
+          void openDiff(file.path, file.originalContent, modifiedUri);
+        }
+      }
     },
   })
     .then((result) => {
@@ -234,7 +251,7 @@ export function openPanel(context: vscode.ExtensionContext): void {
           openIds: panelState?.openIds,
           activeId: panelState?.activeId,
           contextLimit: config?.contextWindow ?? 128000,
-          disableApply: true,
+          disableApply: false,
         });
         return;
       }
@@ -248,6 +265,7 @@ export function openPanel(context: vscode.ExtensionContext): void {
       }
       if (message.type === 'send' && typeof message.text === 'string') {
         const chatId = message.chatId ?? '';
+        lastMessagesByChat[chatId] = message.messages ?? [];
         panel.webview.postMessage({ type: 'userMessage', text: message.text, chatId });
         void runLLMRequest(panel, {
           chatId,
@@ -295,11 +313,41 @@ export function openPanel(context: vscode.ExtensionContext): void {
         }
         return;
       }
+      if (message.type === 'confirmPlan' && message.chatId) {
+        const plan = pendingPlansByChat[message.chatId];
+        if (!plan) return;
+        delete pendingPlansByChat[message.chatId];
+        const stepsText = plan.steps
+          .map((s, i) => {
+            const action = s.action === 'modify' ? 'изменить' : s.action === 'create' ? 'создать' : s.action === 'delete' ? 'удалить' : 'переименовать';
+            const rename = s.newFile ? ` → ${s.newFile}` : '';
+            return `${i + 1}. [${action}] ${s.file}${rename}: ${s.description}`;
+          })
+          .join('\n');
+        const autoText = `Пользователь подтвердил план "${plan.title}".\n\nШаги:\n${stepsText}${plan.notes ? `\n\nЗамечания: ${plan.notes}` : ''}\n\nВыполняй шаги последовательно: для каждого файла сначала прочитай его (если нужно), затем вызови propose_edits. После каждого шага жди подтверждения применения.`;
+        safePostMessage(panel, { type: 'autoUserMessage', chatId: message.chatId, text: `✅ План подтверждён: ${plan.title}` });
+        void runLLMRequest(panel, {
+          chatId: message.chatId,
+          userText: autoText,
+          history: lastMessagesByChat[message.chatId] ?? [],
+          noContext: false,
+          workspaceUri: currentWorkspaceUri,
+          logLabel: 'plan-execution',
+        });
+        return;
+      }
+      if (message.type === 'rejectPlan' && message.chatId) {
+        delete pendingPlansByChat[message.chatId];
+        safePostMessage(panel, { type: 'planRejected', chatId: message.chatId });
+        return;
+      }
       if (message.type === 'applyEdits' && message.chatId) {
         if (!currentWorkspaceUri) return;
         const toApply = lastProposedEditsByChat[message.chatId];
         if (!toApply?.length) return;
         delete lastProposedEditsByChat[message.chatId];
+        clearOriginals();
+        const chatId = message.chatId;
         const applyOne = async (e: { path: string; content: string }) => {
           const normalized = e.path.replace(/\\/g, '/');
           const uri = vscode.Uri.joinPath(currentWorkspaceUri, normalized);
@@ -315,8 +363,26 @@ export function openPanel(context: vscode.ExtensionContext): void {
           await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(e.content));
         };
         Promise.all(toApply.map(applyOne))
-          .then(() => {
+          .then(async () => {
             safePostMessage(panel, { type: 'diffApplied' });
+            // Запускаем линт на уже применённых файлах
+            try {
+              const { output, hasErrors } = await runValidationAfterApply(currentWorkspaceUri, toApply);
+              if (hasErrors && output) {
+                const autoText = `Правки применены. Линт/компилятор нашёл ошибки:\n\n${output}\n\nИсправь.`;
+                safePostMessage(panel, { type: 'autoUserMessage', chatId, text: autoText });
+                void runLLMRequest(panel, {
+                  chatId,
+                  userText: autoText,
+                  history: lastMessagesByChat[chatId] ?? [],
+                  noContext: false,
+                  workspaceUri: currentWorkspaceUri,
+                  logLabel: 'post-apply lint',
+                });
+              }
+            } catch (err) {
+              console.error('[SkyGraph] post-apply validation failed:', err);
+            }
           })
           .catch((err) => {
             console.error('[SkyGraph] applyEdits failed:', err);

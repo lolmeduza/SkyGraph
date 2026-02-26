@@ -319,3 +319,26 @@ body { margin: 0; font-family: var(--vscode-font-family); font-size: var(--vscod
 .think-summary::before { content: "🧠"; font-size: 13px; }
 .think-block[open] .think-summary::before { content: "🧠"; }
 .think-body { padding: 8px 10px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; color: var(--vscode-foreground); opacity: 0.85; border-top: 1px solid var(--vscode-widget-border); }
+
+/* Plan card */
+.plan-card { margin: 10px 0; border: 1px solid var(--vscode-focusBorder, rgba(100,140,255,0.4)); border-radius: 8px; overflow: hidden; background: var(--vscode-editor-inactiveSelectionBackground, rgba(80,100,180,0.08)); }
+.plan-header { padding: 10px 12px 8px; border-bottom: 1px solid var(--vscode-widget-border); }
+.plan-title { font-size: 13px; font-weight: 600; color: var(--vscode-foreground); }
+.plan-steps { padding: 6px 0; }
+.plan-step { display: grid; grid-template-columns: 20px 70px 1fr; gap: 6px; align-items: baseline; padding: 4px 12px; font-size: 12px; line-height: 1.4; }
+.plan-step:hover { background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.04)); }
+.plan-step__num { color: var(--vscode-descriptionForeground); font-size: 11px; text-align: right; }
+.plan-step__action { font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 3px; text-align: center; }
+.plan-step--modify .plan-step__action { background: rgba(100,160,255,0.18); color: #7ab0ff; }
+.plan-step--create .plan-step__action { background: rgba(80,200,120,0.18); color: #6ecf8c; }
+.plan-step--delete .plan-step__action { background: rgba(220,80,80,0.18); color: #e07070; }
+.plan-step--rename .plan-step__action { background: rgba(220,170,60,0.18); color: #d4a840; }
+.plan-step__file { color: var(--vscode-textLink-foreground, #7ab0ff); font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; word-break: break-all; }
+.plan-step__desc { color: var(--vscode-descriptionForeground); grid-column: 3; font-size: 11px; margin-top: 1px; }
+.plan-notes { margin: 4px 12px 6px; font-size: 11px; color: var(--vscode-descriptionForeground); background: rgba(255,200,60,0.07); border-radius: 4px; padding: 5px 8px; }
+.plan-actions { display: flex; gap: 8px; padding: 8px 12px 10px; border-top: 1px solid var(--vscode-widget-border); }
+.plan-btn { padding: 5px 14px; border-radius: 5px; border: none; cursor: pointer; font-size: 12px; font-weight: 500; transition: opacity 0.15s; }
+.plan-btn--confirm { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+.plan-btn--confirm:hover { opacity: 0.85; }
+.plan-btn--reject { background: transparent; color: var(--vscode-descriptionForeground); border: 1px solid var(--vscode-widget-border); }
+.plan-btn--reject:hover { background: rgba(255,255,255,0.06); }

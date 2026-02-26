@@ -68,7 +68,6 @@ export const readFileHandler: ToolHandler = {
       if (candidates.length === 0) {
         return `Файл не найден: ${normalized}. Используй search_files или list_dir для проверки структуры.`;
       }
-      // Если единственный кандидат — читаем без предупреждения пользователя о замене
       const best = candidates[0];
       const resolvedUri = vscode.Uri.joinPath(workspaceUri, best);
       try {
@@ -85,7 +84,6 @@ export const readFileHandler: ToolHandler = {
             : '';
         return `Путь "${normalized}" не найден. Прочитан: ${best}${altHint}\n\n${out}`;
       } catch {
-        // best тоже не читается — перечислим все кандидаты
         const list = candidates.slice(0, 5).join('\n  - ');
         return `Файл не найден: ${normalized}.\nВозможные совпадения:\n  - ${list}\nИспользуй read_file с одним из этих путей.`;
       }
@@ -93,7 +91,6 @@ export const readFileHandler: ToolHandler = {
   },
 };
 
-// Веса для депри-приоритизации «мусорных» путей
 const DEPRIORITIZED_SEGMENTS = ['static-react', 'static', 'legacy', 'dist', 'build', 'generated', '__generated__'];
 
 function pathPenalty(p: string): number {
@@ -129,14 +126,11 @@ async function resolvePathCandidates(
   if (candidates.length === 0) return [];
 
   candidates.sort((a, b) => {
-    // Сначала пути совпадающие с директорией запроса
     const aInDir = dirPrefix ? (a.startsWith(dirPrefix + '/') ? 0 : 1) : 0;
     const bInDir = dirPrefix ? (b.startsWith(dirPrefix + '/') ? 0 : 1) : 1;
     if (aInDir !== bInDir) return aInDir - bInDir;
-    // Потом штраф за static-react/legacy/dist
     const penaltyDiff = pathPenalty(a) - pathPenalty(b);
     if (penaltyDiff !== 0) return penaltyDiff;
-    // Более короткий путь предпочтительнее
     return a.split('/').length - b.split('/').length;
   });
 

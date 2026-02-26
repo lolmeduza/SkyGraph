@@ -3,8 +3,6 @@ import { getIndex } from '../../../context/indexer';
 
 const MAX_SEARCH_RESULTS = 30;
 
-// Сегменты пути, которые указывают на вторичные/сгенерированные копии исходников.
-// Файлы с этими сегментами получают штраф и опускаются ниже в результатах.
 const DEPRIORITIZED_SEGMENTS = [
   'static-react',
   'static',
@@ -66,6 +64,18 @@ export const searchFilesHandler: ToolHandler = {
     const top = scored.slice(0, MAX_SEARCH_RESULTS);
     if (top.length === 0) return 'Файлы не найдены';
 
-    return top.map((r) => r.path).join('\n');
+    return top.map((r) => {
+      const entry = index.files[r.path];
+      if (!entry) return r.path;
+      const meta: string[] = [];
+      if (entry.pattern) meta.push(`[${entry.pattern}]`);
+      const exports = entry.exports?.slice(0, 3);
+      if (exports?.length) meta.push(`exports: ${exports.join(', ')}`);
+      const fns = entry.functions?.slice(0, 3);
+      if (fns?.length) meta.push(`fn: ${fns.join(', ')}`);
+      const hooks = entry.hooks?.slice(0, 2);
+      if (hooks?.length) meta.push(`hooks: ${hooks.join(', ')}`);
+      return meta.length ? `${r.path}  ${meta.join('  ')}` : r.path;
+    }).join('\n');
   },
 };

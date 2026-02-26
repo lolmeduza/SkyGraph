@@ -40,6 +40,7 @@ export interface ChatWithToolsOptions {
     files: { path: string; originalContent: string; proposedContent: string }[],
     edits: { path: string; content: string }[]
   ) => void;
+  onCreatePlan?: (plan: import('./tools/handlers/create-plan').PlanData) => void;
 }
 
 export async function chatWithTools(
@@ -50,6 +51,7 @@ export async function chatWithTools(
   const onToolProgress = typeof options === 'function' ? options : options?.onToolProgress;
   const onProposeEditsDiff = typeof options === 'object' ? options?.onProposeEditsDiff : undefined;
   const onThinkResult = typeof options === 'object' ? options?.onThinkResult : undefined;
+  const onCreatePlan = typeof options === 'object' ? options?.onCreatePlan : undefined;
 
   const config = currentConfig ?? getLLMConfig();
   if (!config?.enabled) return { content: null };
@@ -113,6 +115,16 @@ export async function chatWithTools(
         if (tc.function.name === 'think' && onThinkResult) {
           const match = content.match(/<think_result>\n?([\s\S]*?)\n?<\/think_result>/);
           if (match) onThinkResult(match[1].trim());
+        }
+
+        if (tc.function.name === 'create_plan' && onCreatePlan) {
+          const match = content.match(/<plan_result>\n?([\s\S]*?)\n?<\/plan_result>/);
+          if (match) {
+            try {
+              const plan = JSON.parse(match[1].trim());
+              onCreatePlan(plan);
+            } catch { /* ignore malformed plan */ }
+          }
         }
 
         if (typeof result === 'object' && result?.diffPayload) {

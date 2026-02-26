@@ -3,8 +3,14 @@ import { getIndex } from './indexer';
 
 const GRAPH_FILE = 'pattern-graph.json';
 const CODE_INDEX_DIR = '.code-index';
-const MAX_CONTEXT_CHARS = 6000;
+const MAX_CONTEXT_CHARS = 8000;
 const MAX_RELEVANT_FILES = 18;
+// Максимум символов содержимого активного файла в контексте
+const MAX_ACTIVE_FILE_CHARS = 2000;
+// Максимум символов одного соседнего файла
+const MAX_NEIGHBOR_CHARS = 600;
+// Сколько соседей включать
+const MAX_NEIGHBORS = 3;
 
 interface PatternGraph {
   meta?: { projectRoot: string; generatedAt: string; version: string };
@@ -31,6 +37,16 @@ function getRelevantPathsForQuery(index: Awaited<ReturnType<typeof getIndex>>, q
   return scored.slice(0, MAX_RELEVANT_FILES).map((r) => r.path);
 }
 
+async function readFileContent(workspaceUri: vscode.Uri, relativePath: string): Promise<string | null> {
+  try {
+    const uri = vscode.Uri.joinPath(workspaceUri, relativePath);
+    const data = await vscode.workspace.fs.readFile(uri);
+    return new TextDecoder().decode(data);
+  } catch {
+    return null;
+  }
+}
+
 export async function getFinderProjectContext(
   workspaceUri: vscode.Uri,
   activeFileRelative?: string | null,
@@ -53,51 +69,76 @@ export async function getFinderProjectContext(
   const parts: string[] = [];
   const index = await getIndex(workspaceUri);
 
-  if (userQuery?.trim()) {
+  // 1. Содержимое активного файла + прямые соседи по графу импортов
+  if (activeFileRelative) {
+    const activeContent = await readFileContent(workspaceUri, activeFileRelative);
+    if (activeContent) {
+      const truncated = activeContent.length > MAX_ACTIVE_FILE_CHARS
+        ? activeContent.slice(0, MAX_ACTIVE_FILE_CHARS) + '\n... (truncated)'
+        : activeContent;
+      parts.push(`=== Активный файл: ${activeFileRelative} ===\n${truncated}`);
+    }
+
+    // Прямые соседи из графа (файлы которые импортирует активный файл и которые его импортируют)
+    const graphFileData = graph.files?.[activeFileRelative];
+    const directNeighbors: string[] = graphFileData?.relatedFiles?.slice(0, MAX_NEIGHBORS) ?? [];
+
+    // Если прямых соседей нет — берём соседей по паттерну из индекса
+    if (directNeighbors.length === 0) {
+      const entry = index?.files?.[activeFileRelative];
+      const pattern = entry?.pattern;
+      if (pattern && graph.filesByPattern) {
+        const relatedPatterns = Object.keys(graph.patterns?.[pattern] || {}).slice(0, 5);
+        const seen = new Set<string>([activeFileRelative]);
+        for (const p of [pattern, ...relatedPatterns]) {
+          for (const path of graph.filesByPattern[p] || []) {
+            if (!seen.has(path)) {
+              seen.add(path);
+              directNeighbors.push(path);
+              if (directNeighbors.length >= MAX_NEIGHBORS) break;
+            }
+          }
+          if (directNeighbors.length >= MAX_NEIGHBORS) break;
+        }
+      }
+    }
+
+    if (directNeighbors.length > 0) {
+      const neighborParts: string[] = [];
+      for (const neighbor of directNeighbors) {
+        const content = await readFileContent(workspaceUri, neighbor);
+        if (!content) continue;
+        const truncated = content.length > MAX_NEIGHBOR_CHARS
+          ? content.slice(0, MAX_NEIGHBOR_CHARS) + '\n... (truncated)'
+          : content;
+        neighborParts.push(`=== ${neighbor} ===\n${truncated}`);
+      }
+      if (neighborParts.length > 0) {
+        parts.push('Связанные файлы:\n' + neighborParts.join('\n\n'));
+      }
+    }
+  }
+
+  // 2. Релевантные файлы по запросу — с аннотациями из индекса
+  if (userQuery?.trim() && index) {
     const relevant = getRelevantPathsForQuery(index, userQuery.trim());
     if (relevant.length > 0) {
-      parts.push('Релевантные файлы по запросу: ' + relevant.join(', '));
+      const annotated = relevant.map((path) => {
+        const entry = index.files[path];
+        if (!entry) return path;
+        const parts: string[] = [path];
+        if (entry.pattern) parts.push(`[${entry.pattern}]`);
+        if (entry.exports?.length) parts.push(`exports: ${entry.exports.slice(0, 3).join(', ')}`);
+        if (entry.functions?.length) parts.push(`fn: ${entry.functions.slice(0, 3).join(', ')}`);
+        return parts.join('  ');
+      });
+      parts.push('Релевантные файлы:\n' + annotated.join('\n'));
     }
   }
 
+  // 3. Паттерны проекта (без filesByPattern — слишком шумно, убираем)
   if (graph.examples && Object.keys(graph.examples).length > 0) {
     parts.push('Паттерны проекта: ' + Object.entries(graph.examples).map(([p, desc]) => `${p} (${desc})`).join('; '));
-  }
-
-  if (graph.filesByPattern && Object.keys(graph.filesByPattern).length > 0) {
-    const byPattern: string[] = [];
-    const maxFilesPerPattern = 8;
-    for (const [pattern, files] of Object.entries(graph.filesByPattern)) {
-      const list = files.length > maxFilesPerPattern ? files.slice(0, maxFilesPerPattern).join(', ') + ` (+${files.length - maxFilesPerPattern})` : files.join(', ');
-      byPattern.push(`${pattern}: ${list}`);
-    }
-    parts.push('Файлы по паттернам:\n' + byPattern.join('\n'));
-  }
-
-  if (activeFileRelative) {
-    const entry = index?.files?.[activeFileRelative];
-    const pattern = entry?.pattern;
-    if (pattern && graph.patterns && graph.filesByPattern) {
-      const relatedPatterns = Object.keys(graph.patterns[pattern] || {}).slice(0, 15);
-      const relatedFiles: string[] = [];
-      const seen = new Set<string>();
-      for (const p of [pattern, ...relatedPatterns]) {
-        for (const path of graph.filesByPattern[p] || []) {
-          if (path !== activeFileRelative && !seen.has(path)) {
-            seen.add(path);
-            relatedFiles.push(path);
-            if (relatedFiles.length >= 12) break;
-          }
-        }
-        if (relatedFiles.length >= 12) break;
-      }
-      if (relatedPatterns.length || relatedFiles.length) {
-        const rel: string[] = [];
-        if (relatedPatterns.length) rel.push('связанные паттерны: ' + relatedPatterns.join(', '));
-        if (relatedFiles.length) rel.push('связанные файлы: ' + relatedFiles.slice(0, 12).join(', '));
-        parts.push('Текущий файл (' + activeFileRelative + '): ' + rel.join('; '));
-      }
-    }
   }
 
   if (parts.length === 0) return null;

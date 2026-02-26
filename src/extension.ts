@@ -4,12 +4,15 @@ import { openPanel, getPanel } from './panel';
 import { initLLM } from './llm';
 import { getLLMConfig } from './llm/config';
 import { ensureUserInstructionsPath } from './history';
-import { getOrBuildIndex, updateIndex } from './context/indexer';
+import { getOrBuildIndex, updateIndex, updateIndexForFiles } from './context/indexer';
 import { isIndexedFile } from './context/indexer/scanner';
+import { registerDiffProvider } from './panel/diff-provider';
 
 const INDEX_DEBOUNCE_MS = 1500;
 let indexDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let indexBuildInProgress = false;
+const pendingChangedUris = new Set<string>();
+const pendingDeletedUris = new Set<string>();
 
 let outputChannel: vscode.OutputChannel | null = null;
 
@@ -49,11 +52,17 @@ function installOutputChannel(): void {
   };
 }
 
-function scheduleIndexUpdate(workspaceUri: vscode.Uri): void {
+function scheduleIndexUpdate(workspaceUri: vscode.Uri, changedUri?: vscode.Uri, deletedUri?: vscode.Uri): void {
+  if (changedUri) pendingChangedUris.add(changedUri.toString());
+  if (deletedUri) pendingDeletedUris.add(deletedUri.toString());
   if (indexDebounceTimer) clearTimeout(indexDebounceTimer);
   indexDebounceTimer = setTimeout(() => {
     indexDebounceTimer = null;
-    void runIndexBuildTask(workspaceUri, 'update');
+    const changed = [...pendingChangedUris].map((s) => vscode.Uri.parse(s));
+    const deleted = [...pendingDeletedUris].map((s) => vscode.Uri.parse(s));
+    pendingChangedUris.clear();
+    pendingDeletedUris.clear();
+    void runIndexBuildTask(workspaceUri, 'incremental', changed, deleted);
   }, INDEX_DEBOUNCE_MS);
 }
 
@@ -67,12 +76,22 @@ function postIndexBuildStatus(): void {
   }
 }
 
-async function runIndexBuildTask(workspaceUri: vscode.Uri, mode: 'initial' | 'update'): Promise<void> {
+async function runIndexBuildTask(
+  workspaceUri: vscode.Uri,
+  mode: 'initial' | 'update' | 'incremental',
+  changedUris?: vscode.Uri[],
+  deletedUris?: vscode.Uri[]
+): Promise<void> {
   indexBuildInProgress = true;
   postIndexBuildStatus();
   try {
-    if (mode === 'initial') await getOrBuildIndex(workspaceUri);
-    else await updateIndex(workspaceUri);
+    if (mode === 'initial') {
+      await getOrBuildIndex(workspaceUri);
+    } else if (mode === 'incremental' && changedUris) {
+      await updateIndexForFiles(workspaceUri, changedUris, deletedUris);
+    } else {
+      await updateIndex(workspaceUri);
+    }
   } finally {
     indexBuildInProgress = false;
     postIndexBuildStatus();
@@ -81,6 +100,7 @@ async function runIndexBuildTask(workspaceUri: vscode.Uri, mode: 'initial' | 'up
 
 export function activate(context: vscode.ExtensionContext): void {
   installOutputChannel();
+  registerDiffProvider(context);
   getOutputChannel().appendLine('[SkyGraph] Активация...');
   // Проверяем что патч console работает
   console.log('[SkyGraph] console.log патч работает');
@@ -110,17 +130,21 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidSaveTextDocument((doc) => {
       const folder = vscode.workspace.getWorkspaceFolder(doc.uri);
       if (!folder || !isIndexedFile(doc.uri)) return;
-      scheduleIndexUpdate(folder.uri);
+      scheduleIndexUpdate(folder.uri, doc.uri);
     }),
     vscode.workspace.onDidCreateFiles((e) => {
       const wsUri = vscode.workspace.workspaceFolders?.[0]?.uri;
-      if (!wsUri || !e.files.some((u) => isIndexedFile(u))) return;
-      scheduleIndexUpdate(wsUri);
+      if (!wsUri) return;
+      for (const uri of e.files) {
+        if (isIndexedFile(uri)) scheduleIndexUpdate(wsUri, uri);
+      }
     }),
     vscode.workspace.onDidDeleteFiles((e) => {
       const wsUri = vscode.workspace.workspaceFolders?.[0]?.uri;
-      if (!wsUri || !e.files.some((u) => isIndexedFile(u))) return;
-      scheduleIndexUpdate(wsUri);
+      if (!wsUri) return;
+      for (const uri of e.files) {
+        if (isIndexedFile(uri)) scheduleIndexUpdate(wsUri, undefined, uri);
+      }
     }),
     vscode.commands.registerCommand('skyGraph.openPanel', () => {
       getOutputChannel().show(true);

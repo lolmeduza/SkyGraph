@@ -257,3 +257,126 @@ export async function buildAndSaveGraph(
   await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(raw));
   return graph;
 }
+
+
+export async function updateGraphForFiles(
+  workspaceUri: vscode.Uri,
+  fullIndex: Record<string, FileIndexEntry>,
+  changedRelPaths: string[]
+): Promise<PatternGraphData> {
+  // Загружаем существующий граф если он есть
+  const graphUri = vscode.Uri.joinPath(workspaceUri, CODE_INDEX_DIR, GRAPH_FILE);
+  let existingGraph: PatternGraphData | null = null;
+  try {
+    const data = await vscode.workspace.fs.readFile(graphUri);
+    existingGraph = JSON.parse(new TextDecoder().decode(data)) as PatternGraphData;
+  } catch {
+    // Нет существующего графа — строим полностью
+    return buildAndSaveGraph(workspaceUri, fullIndex);
+  }
+
+  const changedSet = new Set(changedRelPaths);
+
+  // Определяем «затронутые» файлы: изменённые + те кто на них ссылается
+  const allNodes = buildNodes(fullIndex);
+  const fileSet = new Set(allNodes.map((n) => n.file));
+  const nodeByFile = new Map(allNodes.map((n) => [n.file, n]));
+
+  const affected = new Set(changedRelPaths);
+  for (const node of allNodes) {
+    for (const imp of node.imports) {
+      const target = resolveImportToFile(imp, node.file, fileSet);
+      if (target && changedSet.has(target)) {
+        affected.add(node.file);
+      }
+    }
+  }
+
+  // Строим новые file-level relations только для затронутых файлов
+  const { fileRelations } = detectRelations(allNodes, fileSet, nodeByFile);
+
+  // Обновляем граф: берём существующий и патчим затронутые файлы
+  const updatedGraph: PatternGraphData = {
+    ...existingGraph,
+    meta: {
+      ...existingGraph.meta,
+      generatedAt: new Date().toISOString(),
+    },
+    files: { ...existingGraph.files },
+  };
+
+  // Удаляем записи для удалённых/изменённых файлов
+  for (const rel of affected) {
+    delete updatedGraph.files[rel];
+  }
+
+  // Добавляем/обновляем записи для файлов которые ещё существуют в индексе
+  for (const rel of affected) {
+    if (!fullIndex[rel]) continue;
+    const related = fileRelations.get(rel);
+    if (related) {
+      const relatedPatterns = new Set<string>();
+      for (const r of related) {
+        const n = nodeByFile.get(r);
+        if (n) relatedPatterns.add(n.pattern);
+      }
+      updatedGraph.files[rel] = {
+        relatedFiles: [...related].slice(0, 15),
+        relatedPatterns: [...relatedPatterns],
+      };
+    }
+  }
+
+  // filesByPattern: перестраиваем полностью (быстро — просто группировка)
+  const newFilesByPattern: Record<string, string[]> = {};
+  for (const node of allNodes) {
+    if (!newFilesByPattern[node.pattern]) newFilesByPattern[node.pattern] = [];
+    if (newFilesByPattern[node.pattern].length < MAX_FILES_PER_PATTERN) {
+      newFilesByPattern[node.pattern].push(node.file);
+    }
+  }
+  updatedGraph.filesByPattern = newFilesByPattern;
+
+  // patterns (pattern relations): перестраиваем только если изменился паттерн затронутого файла
+  const affectedPatterns = new Set(
+    [...affected].map((rel) => fullIndex[rel]?.pattern).filter(Boolean) as string[]
+  );
+  // Если паттерн-состав изменился — перестраиваем pattern relations полностью (это быстро)
+  if (affectedPatterns.size > 0) {
+    const { patternRelations } = detectRelations(allNodes, fileSet, nodeByFile);
+    const relationMap: Record<string, Record<string, number>> = {};
+    for (const rel of patternRelations) {
+      if (!relationMap[rel.from]) relationMap[rel.from] = {};
+      relationMap[rel.from][rel.to] = (relationMap[rel.from][rel.to] || 0) + rel.weight;
+    }
+    // Симметрия
+    const symmetric: Record<string, Record<string, number>> = {};
+    for (const pattern in relationMap) {
+      if (!symmetric[pattern]) symmetric[pattern] = {};
+      for (const to in relationMap[pattern]) {
+        symmetric[pattern][to] = relationMap[pattern][to];
+        if (!symmetric[to]) symmetric[to] = {};
+        symmetric[to][pattern] = (symmetric[to][pattern] || 0) + relationMap[pattern][to] * 0.8;
+      }
+    }
+    // Нормализация
+    const minWeight = 0.05;
+    for (const pattern in symmetric) {
+      let max = 0;
+      for (const to in symmetric[pattern]) max = Math.max(max, symmetric[pattern][to]);
+      if (max === 0) { delete symmetric[pattern]; continue; }
+      for (const to in symmetric[pattern]) {
+        const w = Math.round((symmetric[pattern][to] / max) * 100) / 100;
+        if (w < minWeight) delete symmetric[pattern][to];
+        else symmetric[pattern][to] = Math.min(1, w);
+      }
+      if (Object.keys(symmetric[pattern]).length === 0) delete symmetric[pattern];
+    }
+    updatedGraph.patterns = symmetric;
+  }
+
+  const dirUri = vscode.Uri.joinPath(workspaceUri, CODE_INDEX_DIR);
+  await vscode.workspace.fs.createDirectory(dirUri);
+  await vscode.workspace.fs.writeFile(graphUri, new TextEncoder().encode(JSON.stringify(updatedGraph, null, 2)));
+  return updatedGraph;
+}
